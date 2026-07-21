@@ -102,8 +102,8 @@ void HighlightManager::StopShaderOn(RE::TESObjectREFR* a_ref)
 
 	const auto handle = a_ref->CreateRefHandle();
 
-	processLists->ForEachMagicTempEffect([&](RE::BSTempEffect& a_tempEffect) {
-		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(&a_tempEffect)) {
+	processLists->ForEachMagicTempEffect([&](RE::BSTempEffect* a_tempEffect) {
+		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(a_tempEffect)) {
 			if (shaderEffect->effectData == _shader && shaderEffect->target == handle) {
 				shaderEffect->finished = true;  // flags it for removal next update
 			}
