@@ -1,25 +1,24 @@
 #pragma once
 
-// Listens for SKSE::CrosshairRefEvent (fired whenever the object under the
-// crosshair changes) and drives the HighlightManager accordingly.
-class CrosshairWatcher : public RE::BSTEventSink<SKSE::CrosshairRefEvent>
+// Drives the highlight by polling the crosshair pick every frame (via a hook on
+// PlayerCharacter::Update), so the outline tracks the reticle tightly instead of
+// lagging behind the game's "sticky" crosshair-ref event.
+class CrosshairWatcher
 {
 public:
 	static CrosshairWatcher* GetSingleton();
 
-	// Idempotent: attaches this sink to the crosshair-ref event source.
-	void Register();
+	// Install the per-frame update hook (idempotent).
+	void Install();
 
-	RE::BSEventNotifyControl ProcessEvent(
-		const SKSE::CrosshairRefEvent* a_event,
-		RE::BSTEventSource<SKSE::CrosshairRefEvent>* a_source) override;
+	// Read the current crosshair target and update the highlight. Called each
+	// frame from the update hook.
+	void Poll();
 
 private:
 	CrosshairWatcher() = default;
 	CrosshairWatcher(const CrosshairWatcher&) = delete;
-	CrosshairWatcher(CrosshairWatcher&&) = delete;
 	CrosshairWatcher& operator=(const CrosshairWatcher&) = delete;
-	CrosshairWatcher& operator=(CrosshairWatcher&&) = delete;
 
-	bool _registered{ false };
+	bool _installed{ false };
 };

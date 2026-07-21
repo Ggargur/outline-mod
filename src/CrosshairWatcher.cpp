@@ -5,36 +5,49 @@
 #include "HighlightManager.h"
 #include "ItemFilter.h"
 
+namespace
+{
+	// Per-frame hook: PlayerCharacter::Update is vtable index 0xAD (SE/AE). We call
+	// the original, then sample the crosshair pick.
+	struct PlayerUpdateHook
+	{
+		static void thunk(RE::PlayerCharacter* a_player, float a_delta)
+		{
+			func(a_player, a_delta);
+			CrosshairWatcher::GetSingleton()->Poll();
+		}
+
+		static inline REL::Relocation<decltype(thunk)> func;
+		static constexpr std::size_t idx = 0xAD;
+	};
+}
+
 CrosshairWatcher* CrosshairWatcher::GetSingleton()
 {
 	static CrosshairWatcher singleton;
 	return &singleton;
 }
 
-void CrosshairWatcher::Register()
+void CrosshairWatcher::Install()
 {
-	if (_registered) {
+	if (_installed) {
 		return;
 	}
-	if (auto* source = SKSE::GetCrosshairRefEventSource()) {
-		source->AddEventSink(this);
-		_registered = true;
-		logger::info("Registered crosshair ref event sink.");
-	} else {
-		logger::error("Could not get crosshair ref event source.");
-	}
+
+	REL::Relocation<std::uintptr_t> vtbl{ RE::PlayerCharacter::VTABLE[0] };
+	PlayerUpdateHook::func = vtbl.write_vfunc(PlayerUpdateHook::idx, PlayerUpdateHook::thunk);
+	_installed = true;
+
+	logger::info("Installed PlayerCharacter::Update hook for crosshair polling.");
 }
 
-RE::BSEventNotifyControl CrosshairWatcher::ProcessEvent(
-	const SKSE::CrosshairRefEvent* a_event,
-	RE::BSTEventSource<SKSE::CrosshairRefEvent>*)
+void CrosshairWatcher::Poll()
 {
+	RE::TESObjectREFR* ref = nullptr;
+	if (auto* pick = RE::CrosshairPickData::GetSingleton()) {
+		ref = pick->target.get().get();  // ObjectRefHandle -> NiPointer -> raw
+	}
+
 	auto* manager = HighlightManager::GetSingleton();
-
-	// crosshairRef is null when the crosshair leaves all references.
-	RE::TESObjectREFR* ref = a_event ? a_event->crosshairRef.get() : nullptr;
-
 	manager->SetTarget(ItemFilter::IsEligible(ref) ? ref : nullptr);
-
-	return RE::BSEventNotifyControl::kContinue;
 }

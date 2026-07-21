@@ -17,8 +17,9 @@ artifact is a ready-to-install mod (DLL + INI + texture).
 
 1. On `kDataLoaded`, read `ItemOutline.ini` and **create** the edge `TESEffectShader`
    at runtime from those values (see [`HighlightManager::Init`](src/HighlightManager.cpp)).
-2. Subscribe to `SKSE::CrosshairRefEvent` (fires when the crosshair target changes).
-3. For each new target, [`ItemFilter`](src/ItemFilter.cpp) checks the base form type
+2. Hook `PlayerCharacter::Update` and **poll `CrosshairPickData` every frame** so the
+   highlight tracks the reticle tightly (no lag from the game's sticky crosshair-ref event).
+3. For the current target, [`ItemFilter`](src/ItemFilter.cpp) checks the base form type
    against the enabled categories.
 4. [`HighlightManager`](src/HighlightManager.cpp) applies the effect shader to the
    new target and stops it on the previous one (by scanning the active temp-effect
@@ -27,7 +28,7 @@ artifact is a ready-to-install mod (DLL + INI + texture).
 | File | Role |
 |------|------|
 | [src/main.cpp](src/main.cpp) | SKSE entry point, logging, lifecycle |
-| [src/CrosshairWatcher.cpp](src/CrosshairWatcher.cpp) | `CrosshairRefEvent` sink |
+| [src/CrosshairWatcher.cpp](src/CrosshairWatcher.cpp) | Per-frame crosshair polling (Update hook) |
 | [src/ItemFilter.cpp](src/ItemFilter.cpp) | Eligibility by base form type |
 | [src/HighlightManager.cpp](src/HighlightManager.cpp) | Apply/remove effect shader |
 | [src/Settings.cpp](src/Settings.cpp) | INI parsing (SimpleIni) |

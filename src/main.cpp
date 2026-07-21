@@ -32,7 +32,7 @@ namespace
 			Settings::GetSingleton()->Load();
 
 			if (HighlightManager::GetSingleton()->Init()) {
-				CrosshairWatcher::GetSingleton()->Register();
+				CrosshairWatcher::GetSingleton()->Install();
 				logger::info("ItemOutline ready - watching crosshair.");
 			} else {
 				logger::error("ItemOutline disabled: could not create the edge effect shader.");
