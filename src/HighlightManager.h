@@ -16,9 +16,9 @@ class HighlightManager
 public:
 	static HighlightManager* GetSingleton();
 
-	// Look up the EFSH record from ItemOutline.esp. Returns false if not found
-	// (mod misinstalled) -> caller should disable the feature.
-	bool LoadForms();
+	// Build the edge effect shader at runtime (no ESP required) from the values in
+	// Settings. Returns false if the form could not be created -> disable feature.
+	bool Init();
 
 	// Highlight a_ref (clearing any previous target first). Passing nullptr just
 	// clears the current highlight.

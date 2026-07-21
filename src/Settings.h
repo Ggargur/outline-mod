@@ -22,17 +22,21 @@ public:
 	// Skip items whose base gold value is below this (0 = no minimum).
 	std::int32_t minItemValue = 0;
 
-	// --- Appearance -------------------------------------------------------
-	// If true, tint the applied shader with the RGB below instead of the color
-	// baked into the EFSH record. If false, the ESP's own edge color is used.
-	bool overrideColor = false;
+	// --- Appearance (drives the runtime-built effect shader) --------------
+	// Outline / edge color, 0.0-1.0 per channel.
 	float colorR = 1.0f;
 	float colorG = 0.85f;
 	float colorB = 0.20f;
 
+	// Rim tightness: higher = thinner rim hugging the silhouette.
+	float edgeFalloff = 2.5f;
+	// Edge width in alpha units (game-space thickness of the glow band).
+	float edgeWidth = 10.0f;
+	// Interior fill visibility, 0.0 (invisible interior, pure outline) .. 1.0.
+	float fillAlpha = 0.10f;
+
 	// Effect shader lifetime, in seconds, used when applying. -1 == infinite
-	// (removed explicitly when the crosshair leaves). Kept configurable so users
-	// can switch to the finite-duration/auto-expire behaviour if desired.
+	// (removed explicitly when the crosshair leaves).
 	float shaderDuration = -1.0f;
 
 private:

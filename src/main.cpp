@@ -31,13 +31,11 @@ namespace
 		case SKSE::MessagingInterface::kDataLoaded:
 			Settings::GetSingleton()->Load();
 
-			if (HighlightManager::GetSingleton()->LoadForms()) {
+			if (HighlightManager::GetSingleton()->Init()) {
 				CrosshairWatcher::GetSingleton()->Register();
 				logger::info("ItemOutline ready - watching crosshair.");
 			} else {
-				logger::error(
-					"ItemOutline disabled: could not find the edge effect shader. "
-					"Is ItemOutline.esp installed and enabled?");
+				logger::error("ItemOutline disabled: could not create the edge effect shader.");
 			}
 			break;
 		default:

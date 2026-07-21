@@ -9,10 +9,14 @@ reference under the crosshair, so whatever lighting/post-processing stack you ru
 (Community Shaders, ENB, or vanilla) renders it through the normal path — no pass
 ordering or render-state conflicts.
 
+**No ESP, no Creation Kit needed:** the effect shader is built entirely in code at
+runtime from `ItemOutline.ini`, using a small fill texture shipped with the mod. The
+artifact is a ready-to-install mod (DLL + INI + texture).
+
 ## How it works
 
-1. On `kDataLoaded`, read `ItemOutline.ini` and look up the edge effect shader from
-   `ItemOutline.esp`.
+1. On `kDataLoaded`, read `ItemOutline.ini` and **create** the edge `TESEffectShader`
+   at runtime from those values (see [`HighlightManager::Init`](src/HighlightManager.cpp)).
 2. Subscribe to `SKSE::CrosshairRefEvent` (fires when the crosshair target changes).
 3. For each new target, [`ItemFilter`](src/ItemFilter.cpp) checks the base form type
    against the enabled categories.
@@ -34,6 +38,8 @@ ordering or render-state conflicts.
 - [SKSE64](https://skse.silverlock.org/) (AE build)
 - [Address Library for SKSE Plugins](https://www.nexusmods.com/skyrimspecialedition/mods/32444)
 - Community Shaders and/or ENB are **optional** — the mod works with or without them.
+
+No ESP/plugin slot is used and no master files are required.
 
 ## Building (Windows)
 
@@ -69,26 +75,11 @@ cmake --preset windows-release -DITEMOUTLINE_DEPLOY_DIR="C:/Path/To/mods/ItemOut
 > submodule checked out will show "file not found" IntelliSense errors — those
 > resolve once the submodule is present and CMake has configured.
 
-## Creating `ItemOutline.esp` (the edge effect shader)
-
-The DLL looks up an **Effect Shader (EFSH)** at **local FormID `0x800`** in a plugin
-named exactly **`ItemOutline.esp`**. Create it once in the Creation Kit or SSEEdit:
-
-**SSEEdit (xEdit) route**
-1. Open SSEEdit, right-click → *Add* a new ESP named `ItemOutline.esp`, flag it **ESL**.
-2. Add an **Effect Shader** record. Note/force its FormID to end in `800` (e.g.
-   `xx000800`). If you use a different ID, update `kShaderLocalFormID` in
-   [src/HighlightManager.cpp](src/HighlightManager.cpp#L15).
-3. Configure it as an **edge-only membrane glow** (see settings below).
-
-**Suggested EFSH settings for an outline look**
-- **Membrane Shader** flags: enable additive blend; no (or fully transparent) fill texture.
-- **Fill Color / Alpha:** alpha ≈ 0 so the interior stays clear.
-- **Edge Color:** your outline color (e.g. warm gold). Overridable at runtime via
-  `bOverrideColor` in the INI.
-- **Edge Effect Fall-off / Exponent:** high, so the glow hugs the silhouette as a thin rim.
-- **Fill/Edge textures:** leave the fill texture empty; a subtle `effectsgradient` edge
-  texture reads well.
+The effect shader is created in code (see
+[`HighlightManager::Init`](src/HighlightManager.cpp)) — there is **no ESP** and nothing
+to author in the Creation Kit. Its look is driven by the `[Highlight]` keys in the INI
+(edge color, edge fall-off/width, fill alpha). The fill texture ships with the mod at
+`textures/ItemOutline/edge_gradient.dds`.
 
 > This produces a Fresnel rim-glow around the item — the practical "outline" for an
 > effect-shader approach. A crisp vector-style contour would require a screen-space
@@ -96,26 +87,28 @@ named exactly **`ItemOutline.esp`**. Create it once in the Creation Kit or SSEEd
 
 ## Installing
 
-Package these into a mod archive (MO2/Vortex) or drop into `Data/`:
+The CI **ItemOutline-Mod** artifact is already laid out for install. Drop its contents
+into `Data/` (or install the folder as a mod in MO2/Vortex):
 
 ```
 SKSE/Plugins/ItemOutline.dll
-SKSE/Plugins/ItemOutline.ini      (from data/ in this repo)
-ItemOutline.esp
+SKSE/Plugins/ItemOutline.ini
+textures/ItemOutline/edge_gradient.dds
 ```
 
 ## Configuration
 
 Edit `Data/SKSE/Plugins/ItemOutline.ini` — see
 [data/SKSE/Plugins/ItemOutline.ini](data/SKSE/Plugins/ItemOutline.ini) for every key
-(which categories to highlight, minimum item value, outline color override, shader
-lifetime).
+(which categories to highlight, minimum item value, outline color, edge fall-off/width,
+fill alpha, shader lifetime).
 
 ## Testing in-game
 
-1. Install DLL + ESP + INI alongside SKSE + Address Library, with Community Shaders active.
+1. Install the mod (DLL + INI + texture) alongside SKSE + Address Library, with
+   Community Shaders active.
 2. Load a save; open `Documents/My Games/Skyrim Special Edition/SKSE/ItemOutline.log`
-   and confirm "ItemOutline ready" with no form-lookup errors.
+   and confirm "ItemOutline ready" and "Runtime effect shader created".
 3. Point the crosshair at: a weapon/potion on the ground, an item on a table, a plant,
    and (if enabled) an ore vein → the edge glow appears **only** on those.
 4. Move the crosshair away → the glow disappears immediately (no stuck effect).

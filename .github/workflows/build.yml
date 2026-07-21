@@ -36,11 +36,33 @@ jobs:
       - name: Build
         run: cmake --build build
 
-      - name: Upload DLL
+      # Assemble a ready-to-install mod layout (MO2/Vortex or drop into Data/):
+      #   SKSE/Plugins/ItemOutline.dll
+      #   SKSE/Plugins/ItemOutline.ini
+      #   textures/ItemOutline/edge_gradient.dds
+      - name: Package mod
+        shell: pwsh
+        run: |
+          $stage = "package/ItemOutline"
+          New-Item -ItemType Directory -Force -Path "$stage/SKSE/Plugins" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$stage/textures/ItemOutline" | Out-Null
+          $dll = Get-ChildItem -Path build -Recurse -Filter ItemOutline.dll | Select-Object -First 1
+          if (-not $dll) { throw "ItemOutline.dll not found under build/" }
+          Copy-Item $dll.FullName "$stage/SKSE/Plugins/"
+          Copy-Item "data/SKSE/Plugins/ItemOutline.ini" "$stage/SKSE/Plugins/"
+          Copy-Item "data/textures/ItemOutline/edge_gradient.dds" "$stage/textures/ItemOutline/"
+          Get-ChildItem -Recurse $stage | Select-Object FullName
+
+      - name: Upload installable mod
         uses: actions/upload-artifact@v4
         with:
-          name: ItemOutline
-          path: |
-            build/**/ItemOutline.dll
-            build/**/ItemOutline.pdb
+          name: ItemOutline-Mod
+          path: package/ItemOutline/**
           if-no-files-found: error
+
+      - name: Upload debug symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: ItemOutline-pdb
+          path: build/**/ItemOutline.pdb
+          if-no-files-found: warn

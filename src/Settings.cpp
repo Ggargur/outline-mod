@@ -33,10 +33,12 @@ void Settings::Load()
 	onlyLootable = ini.GetBoolValue("Filter", "bOnlyLootable", onlyLootable);
 	minItemValue = static_cast<std::int32_t>(ini.GetLongValue("Filter", "iMinItemValue", minItemValue));
 
-	overrideColor = ini.GetBoolValue("Highlight", "bOverrideColor", overrideColor);
 	colorR = static_cast<float>(ini.GetDoubleValue("Highlight", "fColorR", colorR));
 	colorG = static_cast<float>(ini.GetDoubleValue("Highlight", "fColorG", colorG));
 	colorB = static_cast<float>(ini.GetDoubleValue("Highlight", "fColorB", colorB));
+	edgeFalloff = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff));
+	edgeWidth = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeWidth", edgeWidth));
+	fillAlpha = static_cast<float>(ini.GetDoubleValue("Highlight", "fFillAlpha", fillAlpha));
 	shaderDuration = static_cast<float>(ini.GetDoubleValue("Highlight", "fShaderDuration", shaderDuration));
 
 	// Persist so the file always exists with every key documented on disk.
@@ -45,14 +47,16 @@ void Settings::Load()
 	ini.SetBoolValue("Filter", "bHighlightOreVeins", highlightOreVeins);
 	ini.SetBoolValue("Filter", "bOnlyLootable", onlyLootable);
 	ini.SetLongValue("Filter", "iMinItemValue", minItemValue);
-	ini.SetBoolValue("Highlight", "bOverrideColor", overrideColor);
 	ini.SetDoubleValue("Highlight", "fColorR", colorR);
 	ini.SetDoubleValue("Highlight", "fColorG", colorG);
 	ini.SetDoubleValue("Highlight", "fColorB", colorB);
+	ini.SetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff);
+	ini.SetDoubleValue("Highlight", "fEdgeWidth", edgeWidth);
+	ini.SetDoubleValue("Highlight", "fFillAlpha", fillAlpha);
 	ini.SetDoubleValue("Highlight", "fShaderDuration", shaderDuration);
 	ini.SaveFile(kIniPath);
 
 	logger::info(
-		"Settings: inventory={} flora={} ore={} onlyLootable={} minValue={} overrideColor={}",
-		highlightInventoryItems, highlightFlora, highlightOreVeins, onlyLootable, minItemValue, overrideColor);
+		"Settings: inventory={} flora={} ore={} onlyLootable={} minValue={}",
+		highlightInventoryItems, highlightFlora, highlightOreVeins, onlyLootable, minItemValue);
 }

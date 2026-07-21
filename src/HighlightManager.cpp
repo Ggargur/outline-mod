@@ -8,16 +8,28 @@
 
 namespace
 {
-	// The EFSH record lives in ItemOutline.esp. The local form ID below MUST match
-	// the FormID of the effect shader you create in the Creation Kit / xEdit.
-	// (For an ESL-flagged plugin the last three hex digits are what matter; the
-	// game/LookupForm resolves the load-order prefix automatically.)
-	constexpr RE::FormID kShaderLocalFormID = 0x800;
-	constexpr auto kPluginName = "ItemOutline.esp"sv;
+	// Fill texture shipped with the mod (Data/Textures/ItemOutline/edge_gradient.dds).
+	// Paths are relative to Data\Textures\.
+	constexpr auto kFillTexture = "ItemOutline\\edge_gradient.dds"sv;
+
+	// Direct3D9 blend/op constants (the enums are only forward-declared in CommonLib).
+	constexpr auto kBlendSrcAlpha = static_cast<RE::D3DBLEND>(5);   // D3DBLEND_SRCALPHA
+	constexpr auto kBlendOne = static_cast<RE::D3DBLEND>(2);        // D3DBLEND_ONE
+	constexpr auto kBlendOpAdd = static_cast<RE::D3DBLENDOP>(1);    // D3DBLENDOP_ADD
 
 	std::uint8_t ToByte(float a_channel)
 	{
 		return static_cast<std::uint8_t>(std::clamp(a_channel, 0.0f, 1.0f) * 255.0f + 0.5f);
+	}
+
+	RE::Color MakeColor(const Settings& a_s, std::uint8_t a_alpha)
+	{
+		RE::Color c;
+		c.red = ToByte(a_s.colorR);
+		c.green = ToByte(a_s.colorG);
+		c.blue = ToByte(a_s.colorB);
+		c.alpha = a_alpha;
+		return c;
 	}
 }
 
@@ -27,29 +39,63 @@ HighlightManager* HighlightManager::GetSingleton()
 	return &singleton;
 }
 
-bool HighlightManager::LoadForms()
+bool HighlightManager::Init()
 {
-	auto* handler = RE::TESDataHandler::GetSingleton();
-	if (!handler) {
+	auto* factory = RE::IFormFactory::GetConcreteFormFactoryByType<RE::TESEffectShader>();
+	if (!factory) {
+		logger::error("No effect-shader form factory available.");
 		return false;
 	}
 
-	_shader = handler->LookupForm<RE::TESEffectShader>(kShaderLocalFormID, kPluginName);
+	_shader = static_cast<RE::TESEffectShader*>(factory->Create());
 	if (!_shader) {
-		logger::error("Effect shader {:X} not found in {}.", kShaderLocalFormID, kPluginName);
+		logger::error("Failed to create runtime effect shader form.");
 		return false;
 	}
 
-	// Optional runtime tint. Writing to the shared form means every application
-	// uses this color; done once here so the crosshair path stays cheap.
-	const auto* settings = Settings::GetSingleton();
-	if (settings->overrideColor) {
-		_shader->data.edgeColor.red = ToByte(settings->colorR);
-		_shader->data.edgeColor.green = ToByte(settings->colorG);
-		_shader->data.edgeColor.blue = ToByte(settings->colorB);
-	}
+	const auto& s = *Settings::GetSingleton();
+	auto& d = _shader->data;
 
-	logger::info("Loaded effect shader {:08X}.", _shader->GetFormID());
+	const auto edge = MakeColor(s, 255);
+	const auto fill = MakeColor(s, ToByte(s.fillAlpha));
+
+	// Membrane (fill) shader: additive so it glows over the item without darkening it.
+	d.membraneShaderSourceBlendMode = kBlendSrcAlpha;
+	d.membraneShaderDestBlendMode = kBlendOne;
+	d.membraneShaderBlendOperation = kBlendOpAdd;
+	d.membraneShaderZTestFunction = RE::D3DCMPFUNC::kAlways;
+
+	// Interior fill: keep it subtle (driven by fillAlpha), instant on, no fade.
+	d.fillTextureEffectColorKey1 = fill;
+	d.fillTextureEffectColorKey2 = fill;
+	d.fillTextureEffectColorKey3 = fill;
+	d.fillTextureEffectColorKeyScaleTimeColorKey1Scale = 1.0f;
+	d.fillTextureEffectColorKeyScaleTimeColorKey2Scale = 1.0f;
+	d.fillTextureEffectColorKeyScaleTimeColorKey3Scale = 1.0f;
+	d.fillTextureEffectFullAlphaRatio = std::clamp(s.fillAlpha, 0.0f, 1.0f);
+	d.fillTextureEffectPersistentAlphaRatio = std::clamp(s.fillAlpha, 0.0f, 1.0f);
+	d.fillTextureEffectFullAlphaTime = 1.0f;
+	d.textureCountU = 1.0f;
+	d.textureCountV = 1.0f;
+	d.fillTextureEffectTextureScaleU = 1.0f;
+	d.fillTextureEffectTextureScaleV = 1.0f;
+
+	// Edge (rim glow): the actual "outline".
+	d.edgeColor = edge;
+	d.edgeEffectColor = edge;
+	d.edgeEffectFallOff = s.edgeFalloff;
+	d.edgeWidthAlphaUnits = s.edgeWidth;
+	d.edgeEffectFullAlphaRatio = 1.0f;
+	d.edgeEffectPersistentAlphaRatio = 1.0f;
+	d.edgeEffectFullAlphaTime = 1.0f;
+	d.colorScale = 1.0f;
+
+	// No particles.
+	d.flags.set(RE::EffectShaderData::Flags::kDisableParticleShader);
+
+	_shader->fillTexture.textureName = kFillTexture;
+
+	logger::info("Runtime effect shader created (form {:08X}).", _shader->GetFormID());
 	return true;
 }
 
@@ -57,7 +103,7 @@ void HighlightManager::SetTarget(RE::TESObjectREFR* a_ref)
 {
 	const auto newHandle = a_ref ? a_ref->CreateRefHandle() : RE::ObjectRefHandle{};
 
-	// Same target as last frame's event -> nothing to do.
+	// Same target as last event -> nothing to do.
 	if (newHandle == _current) {
 		return;
 	}
@@ -83,8 +129,7 @@ void HighlightManager::ApplyShader(RE::TESObjectREFR* a_ref)
 	if (!_shader || !a_ref) {
 		return;
 	}
-	const auto duration = Settings::GetSingleton()->shaderDuration;
-	a_ref->ApplyEffectShader(_shader, duration);
+	a_ref->ApplyEffectShader(_shader, Settings::GetSingleton()->shaderDuration);
 }
 
 // End every instance of OUR shader currently playing on a_ref. Scanning the
