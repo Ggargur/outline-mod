@@ -1,0 +1,33 @@
+name: Build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:  # lets you run it manually from the Actions tab
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # windows-latest already ships Visual Studio 2022 + CMake + git.
+      - name: Configure
+        run: cmake --preset windows-release
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Upload DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: ItemOutline
+          path: |
+            build/Release/ItemOutline.dll
+            build/Release/ItemOutline.pdb
+          if-no-files-found: error
