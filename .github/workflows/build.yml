@@ -10,6 +10,10 @@ jobs:
   build:
     runs-on: windows-latest
 
+    env:
+      # vcpkg is preinstalled on the GitHub Windows image; point the toolchain at it.
+      VCPKG_ROOT: C:\vcpkg
+
     steps:
       - name: Checkout (with submodules)
         uses: actions/checkout@v4

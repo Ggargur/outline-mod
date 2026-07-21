@@ -4,12 +4,14 @@
   "configurePresets": [
     {
       "name": "windows-release",
-      "displayName": "Windows x64 Release (Ninja + MSVC)",
+      "displayName": "Windows x64 Release (Ninja + MSVC + vcpkg)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded"
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-md",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreadedDLL"
       }
     }
   ],

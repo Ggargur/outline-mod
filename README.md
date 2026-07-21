@@ -38,15 +38,17 @@ ordering or render-state conflicts.
 ## Building (Windows)
 
 Requires the **MSVC toolchain** (Visual Studio 2022 Build Tools, "Desktop C++"),
-**Ninja**, **CMake ≥ 3.21**, and **git**. Run the commands from a **Developer
-Command Prompt / Developer PowerShell for VS** so `cl.exe` is on PATH.
+**Ninja**, **CMake ≥ 3.21**, **git**, and **[vcpkg](https://github.com/microsoft/vcpkg)**
+with the `VCPKG_ROOT` environment variable set (vcpkg provides CommonLibSSE-NG's
+dependencies — spdlog, rapidcsv — via the manifest `vcpkg.json`). Run the commands
+from a **Developer Command Prompt / Developer PowerShell for VS** so `cl.exe` is on PATH.
 
 ```powershell
 # 1. Get CommonLibSSE-NG as a submodule (SimpleIni is fetched automatically by CMake)
 git submodule add https://github.com/CharmedBaryon/CommonLibSSE-NG extern/CommonLibSSE-NG
 git submodule update --init --recursive
 
-# 2. Configure + build (Ninja, single-config Release x64)
+# 2. Configure + build (Ninja, single-config Release x64). vcpkg installs deps on first run.
 cmake --preset windows-release
 cmake --build build
 ```
