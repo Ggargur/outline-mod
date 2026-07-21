@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "item-outline",
+  "version-string": "1.0.0",
+  "description": "Edge-glow highlight on collectable items under the crosshair.",
+  "builtin-baseline": "fc3f61366102c1f0d4547c06d03c523bb18c13a7",
+  "dependencies": [
+    "spdlog",
+    "rapidcsv"
+  ]
+}

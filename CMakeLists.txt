@@ -25,6 +25,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(BUILD_TESTS OFF CACHE BOOL "" FORCE)
 add_subdirectory(extern/CommonLibSSE-NG CommonLibSSE-NG)
 
+# In add_subdirectory mode the helper functions (add_commonlibsse_plugin, ...) are
+# NOT auto-loaded - that normally happens through the installed package config. Pull
+# in the module that defines them so we can call add_commonlibsse_plugin() below.
+include("${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake")
+
 # ---------------------------------------------------------------------------
 # SimpleIni (header-only) via FetchContent
 # ---------------------------------------------------------------------------
