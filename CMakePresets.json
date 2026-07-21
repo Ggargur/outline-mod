@@ -4,9 +4,8 @@
   "configurePresets": [
     {
       "name": "windows-release",
-      "displayName": "Windows x64 Release (MSVC)",
-      "generator": "Visual Studio 17 2022",
-      "architecture": "x64",
+      "displayName": "Windows x64 Release (Ninja + MSVC)",
+      "generator": "Ninja",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
@@ -17,8 +16,7 @@
   "buildPresets": [
     {
       "name": "windows-release",
-      "configurePreset": "windows-release",
-      "configuration": "Release"
+      "configurePreset": "windows-release"
     }
   ]
 }

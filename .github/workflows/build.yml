@@ -16,18 +16,27 @@ jobs:
         with:
           submodules: recursive
 
-      # windows-latest already ships Visual Studio 2022 + CMake + git.
+      # Put MSVC (cl.exe / link.exe) on PATH instead of relying on the
+      # "Visual Studio" CMake generator being discoverable on the runner image.
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Set up Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
       - name: Configure
         run: cmake --preset windows-release
 
       - name: Build
-        run: cmake --build build --config Release
+        run: cmake --build build
 
       - name: Upload DLL
         uses: actions/upload-artifact@v4
         with:
           name: ItemOutline
           path: |
-            build/Release/ItemOutline.dll
-            build/Release/ItemOutline.pdb
+            build/**/ItemOutline.dll
+            build/**/ItemOutline.pdb
           if-no-files-found: error

@@ -37,19 +37,25 @@ ordering or render-state conflicts.
 
 ## Building (Windows)
 
-Requires **Visual Studio 2022** (Desktop C++), **CMake ≥ 3.21**, and **git**.
+Requires the **MSVC toolchain** (Visual Studio 2022 Build Tools, "Desktop C++"),
+**Ninja**, **CMake ≥ 3.21**, and **git**. Run the commands from a **Developer
+Command Prompt / Developer PowerShell for VS** so `cl.exe` is on PATH.
 
 ```powershell
 # 1. Get CommonLibSSE-NG as a submodule (SimpleIni is fetched automatically by CMake)
 git submodule add https://github.com/CharmedBaryon/CommonLibSSE-NG extern/CommonLibSSE-NG
 git submodule update --init --recursive
 
-# 2. Configure + build (Release x64)
+# 2. Configure + build (Ninja, single-config Release x64)
 cmake --preset windows-release
-cmake --build build --config Release
+cmake --build build
 ```
 
-The output is `build/Release/ItemOutline.dll`.
+The output is `build/ItemOutline.dll`.
+
+> Don't have Windows at all? Push the repo to GitHub and let the included
+> [CI workflow](.github/workflows/build.yml) build the DLL for you on a Windows
+> runner — download it from the run's **Artifacts**.
 
 To auto-copy the DLL into a mod staging folder during development, configure with:
 
