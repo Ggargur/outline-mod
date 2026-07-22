@@ -158,12 +158,18 @@ void HighlightManager::StopShaderOn(RE::TESObjectREFR* a_ref)
 		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(a_tempEffect)) {
 			++shaderEffectsSeen;
 			if (shaderEffect->effectData == _shader && shaderEffect->target == handle) {
-				// finished=true only *schedules* removal (the manager culls it on a
-				// later cycle, during which it keeps rendering). Detach() pulls the
-				// effect's 3D out of the scene right now, so the glow stops this frame.
-				shaderEffect->age = shaderEffect->lifetime + 1.0f;  // force expiry
+				// finished=true only *schedules* removal - the manager culls the
+				// effect on a later cycle, during which it keeps rendering (that is
+				// the lingering). Everything below is a plain field write (safe here,
+				// unlike Detach()/vfuncs which mutate the scene graph and crash when
+				// called during this locked iteration):
+				//  - clear kVisible so it stops drawing this frame,
+				//  - force age past lifetime so Update() returns false -> culled next tick,
+				//  - finished as a backstop for cleanup.
+				shaderEffect->flags.reset(RE::ShaderReferenceEffect::Flag::kVisible);
+				shaderEffect->lifetime = 0.0f;
+				shaderEffect->age = 1.0f;
 				shaderEffect->finished = true;
-				shaderEffect->Detach();
 				++matched;
 			}
 		}
