@@ -182,22 +182,44 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	rd.DepthClipEnable = TRUE;
 	_device->CreateRasterizerState(&rd, &_rasterCullFront);
 
-	// Depth test on (so walls occlude the outline), depth write off (so we never
-	// corrupt the depth buffer other passes may still read).
-	D3D11_DEPTH_STENCIL_DESC dsd{};
-	dsd.DepthEnable = TRUE;
-	dsd.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
-	dsd.DepthFunc = D3D11_COMPARISON_LESS_EQUAL;
-	dsd.StencilEnable = FALSE;
-	_device->CreateDepthStencilState(&dsd, &_depthTestNoWrite);
+	rd.CullMode = D3D11_CULL_BACK;  // mask pass draws the object normally
+	_device->CreateRasterizerState(&rd, &_rasterCullBack);
+
+	// Pass 1 (mask): write stencil=1 wherever the object is, no colour.
+	D3D11_DEPTH_STENCIL_DESC maskDesc{};
+	maskDesc.DepthEnable = FALSE;
+	maskDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+	maskDesc.StencilEnable = TRUE;
+	maskDesc.StencilReadMask = 0xFF;
+	maskDesc.StencilWriteMask = 0xFF;
+	maskDesc.FrontFace.StencilFailOp = D3D11_STENCIL_OP_KEEP;
+	maskDesc.FrontFace.StencilDepthFailOp = D3D11_STENCIL_OP_KEEP;
+	maskDesc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_REPLACE;
+	maskDesc.FrontFace.StencilFunc = D3D11_COMPARISON_ALWAYS;
+	maskDesc.BackFace = maskDesc.FrontFace;
+	_device->CreateDepthStencilState(&maskDesc, &_stencilWrite);
+
+	// Pass 2 (outline): draw only where the mask is NOT set - i.e. the band that the
+	// inflated hull adds outside the object's silhouette.
+	D3D11_DEPTH_STENCIL_DESC outlineDesc = maskDesc;
+	outlineDesc.StencilWriteMask = 0x00;
+	outlineDesc.FrontFace.StencilPassOp = D3D11_STENCIL_OP_KEEP;
+	outlineDesc.FrontFace.StencilFunc = D3D11_COMPARISON_NOT_EQUAL;
+	outlineDesc.BackFace = outlineDesc.FrontFace;
+	_device->CreateDepthStencilState(&outlineDesc, &_stencilTestOutside);
 
 	D3D11_BLEND_DESC bd{};
 	bd.RenderTarget[0].BlendEnable = FALSE;
 	bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
 	_device->CreateBlendState(&bd, &_blendOpaque);
 
+	bd.RenderTarget[0].RenderTargetWriteMask = 0;  // mask pass writes stencil only
+	_device->CreateBlendState(&bd, &_blendNoColorWrite);
+
 	_resourcesReady = _vs && _ps && _inputLayout && _cbuffer &&
-	                  _rasterCullFront && _depthTestNoWrite && _blendOpaque;
+	                  _rasterCullFront && _rasterCullBack &&
+	                  _stencilWrite && _stencilTestOutside &&
+	                  _blendOpaque && _blendNoColorWrite;
 	if (!_resourcesReady) {
 		logger::error("Failed to create one or more D3D resources; outline disabled.");
 		_resourceInitFailed = true;
@@ -229,11 +251,31 @@ void OutlineRenderer::OnPresent()
 		return;
 	}
 
+	if (!EnsureStencilBuffer()) {
+		return;
+	}
+
 	// ---- Save everything we are about to clobber, so Community Shaders (and the
-	// game) see the pipeline exactly as they left it. ----
-	ID3D11RenderTargetView* oldRTV = nullptr;
+	// game) see the pipeline exactly as they left it. Community Shaders renders
+	// through a multi-target G-buffer, so saving only slot 0 (as this did at first)
+	// left its other targets unbound and produced blocky shadow artefacts. ----
+	constexpr UINT kMaxRTVs = D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT;
+	ID3D11RenderTargetView* oldRTVs[kMaxRTVs]{};
 	ID3D11DepthStencilView* oldDSV = nullptr;
-	_context->OMGetRenderTargets(1, &oldRTV, &oldDSV);
+	_context->OMGetRenderTargets(kMaxRTVs, oldRTVs, &oldDSV);
+
+	ID3D11Buffer* oldVB = nullptr;
+	UINT oldVBStride = 0;
+	UINT oldVBOffset = 0;
+	_context->IAGetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
+
+	ID3D11Buffer* oldIB = nullptr;
+	DXGI_FORMAT oldIBFormat{};
+	UINT oldIBOffset = 0;
+	_context->IAGetIndexBuffer(&oldIB, &oldIBFormat, &oldIBOffset);
+
+	ID3D11Buffer* oldPSCB = nullptr;
+	_context->PSGetConstantBuffers(0, 1, &oldPSCB);
 
 	ID3D11BlendState* oldBlend = nullptr;
 	FLOAT oldBlendFactor[4]{};
@@ -265,23 +307,23 @@ void OutlineRenderer::OnPresent()
 	// Draw into the final framebuffer (post-processing already ran), testing against
 	// the main depth buffer through a READ-ONLY view so we never write depth.
 	auto& frameBuffer = renderer->renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
-	auto& mainDepth = renderer->depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY];
-
 	auto* rtv = reinterpret_cast<ID3D11RenderTargetView*>(frameBuffer.RTV);
-	auto* dsvReadOnly = reinterpret_cast<ID3D11DepthStencilView*>(mainDepth.readOnlyViews[0]);
 
 	if (rtv) {
-		_context->OMSetRenderTargets(1, &rtv, dsvReadOnly);
-		_context->OMSetBlendState(_blendOpaque, nullptr, 0xFFFFFFFF);
-		_context->OMSetDepthStencilState(_depthTestNoWrite, 0);
-		_context->RSSetState(_rasterCullFront);
+		_context->ClearDepthStencilView(_stencilView, D3D11_CLEAR_STENCIL, 1.0f, 0);
+		_context->OMSetRenderTargets(1, &rtv, _stencilView);
 		_context->IASetInputLayout(_inputLayout);
 		_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		_context->VSSetShader(_vs, nullptr, 0);
 		_context->PSSetShader(_ps, nullptr, 0);
 		_context->VSSetConstantBuffers(0, 1, &_cbuffer);
+		// The pixel shader reads gColor from b0 too. Binding it only to the vertex
+		// stage left the PS sampling an unbound buffer, i.e. zeros - which is why
+		// the first version drew the hull solid black instead of the chosen colour.
+		_context->PSSetConstantBuffers(0, 1, &_cbuffer);
 
 		if (debugQuad) {
+			_context->OMSetBlendState(_blendOpaque, nullptr, 0xFFFFFFFF);
 			DrawDebugQuad();
 		} else {
 			DrawTarget(target);
@@ -291,26 +333,77 @@ void OutlineRenderer::OnPresent()
 	}
 
 	// ---- Restore ----
-	_context->OMSetRenderTargets(1, &oldRTV, oldDSV);
+	_context->OMSetRenderTargets(kMaxRTVs, oldRTVs, oldDSV);
 	_context->OMSetBlendState(oldBlend, oldBlendFactor, oldSampleMask);
 	_context->OMSetDepthStencilState(oldDSS, oldStencilRef);
 	_context->RSSetState(oldRS);
 	_context->IASetInputLayout(oldLayout);
 	_context->IASetPrimitiveTopology(oldTopology);
+	_context->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
+	_context->IASetIndexBuffer(oldIB, oldIBFormat, oldIBOffset);
 	_context->VSSetShader(oldVS, nullptr, 0);
 	_context->PSSetShader(oldPS, nullptr, 0);
 	_context->VSSetConstantBuffers(0, 1, &oldVSCB);
+	_context->PSSetConstantBuffers(0, 1, &oldPSCB);
 
 	// OMGetRenderTargets & friends AddRef their outputs.
-	if (oldRTV) oldRTV->Release();
+	for (auto* view : oldRTVs) {
+		if (view) view->Release();
+	}
 	if (oldDSV) oldDSV->Release();
 	if (oldBlend) oldBlend->Release();
 	if (oldDSS) oldDSS->Release();
 	if (oldRS) oldRS->Release();
 	if (oldLayout) oldLayout->Release();
+	if (oldVB) oldVB->Release();
+	if (oldIB) oldIB->Release();
 	if (oldVS) oldVS->Release();
 	if (oldPS) oldPS->Release();
 	if (oldVSCB) oldVSCB->Release();
+	if (oldPSCB) oldPSCB->Release();
+}
+
+// Our own stencil target, sized to the back buffer. Recreated if the resolution
+// changes.
+bool OutlineRenderer::EnsureStencilBuffer()
+{
+	const auto screen = RE::BSGraphics::Renderer::GetScreenSize();
+	const auto width = static_cast<std::uint32_t>(screen.width);
+	const auto height = static_cast<std::uint32_t>(screen.height);
+	if (width == 0 || height == 0) {
+		return false;
+	}
+
+	if (_stencilView && width == _stencilWidth && height == _stencilHeight) {
+		return true;
+	}
+
+	if (_stencilView) { _stencilView->Release(); _stencilView = nullptr; }
+	if (_stencilTexture) { _stencilTexture->Release(); _stencilTexture = nullptr; }
+
+	D3D11_TEXTURE2D_DESC td{};
+	td.Width = width;
+	td.Height = height;
+	td.MipLevels = 1;
+	td.ArraySize = 1;
+	td.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+	td.SampleDesc.Count = 1;
+	td.Usage = D3D11_USAGE_DEFAULT;
+	td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+
+	if (FAILED(_device->CreateTexture2D(&td, nullptr, &_stencilTexture))) {
+		logger::error("Failed to create stencil texture {}x{}.", width, height);
+		return false;
+	}
+	if (FAILED(_device->CreateDepthStencilView(_stencilTexture, nullptr, &_stencilView))) {
+		logger::error("Failed to create stencil view.");
+		return false;
+	}
+
+	_stencilWidth = width;
+	_stencilHeight = height;
+	logger::info("Stencil buffer created ({}x{}).", width, height);
+	return true;
 }
 
 void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
@@ -342,8 +435,8 @@ void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 			viewProj.m[3][0], viewProj.m[3][1], viewProj.m[3][2], viewProj.m[3][3]);
 	}
 
-	int drawn = 0;
-	// Iterative DFS over the ref's 3D; BSGeometry nodes are the leaves we draw.
+	// Collect the drawable leaves once; both passes iterate the same list.
+	std::vector<RE::BSGeometry*> geometries;
 	std::vector<RE::NiAVObject*> stack{ root };
 	while (!stack.empty()) {
 		auto* obj = stack.back();
@@ -352,8 +445,7 @@ void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 			continue;
 		}
 		if (auto* geometry = obj->AsGeometry()) {
-			DrawGeometry(geometry, viewProj);
-			++drawn;
+			geometries.push_back(geometry);
 			continue;
 		}
 		if (auto* node = obj->AsNode()) {
@@ -363,12 +455,35 @@ void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 		}
 	}
 
-	if (drawn == 0 && _frameCounter % 600 == 0) {
-		logger::warn("Target {:08X} has no BSGeometry to draw.", a_ref->GetFormID());
+	if (geometries.empty()) {
+		if (_frameCounter % 600 == 0) {
+			logger::warn("Target {:08X} has no BSGeometry to draw.", a_ref->GetFormID());
+		}
+		return;
+	}
+
+	const float thickness = Settings::GetSingleton()->outlineThickness;
+
+	// Pass 1 - mask: draw the object at its real size, colour writes off, stamping
+	// stencil=1 over its silhouette.
+	_context->OMSetBlendState(_blendNoColorWrite, nullptr, 0xFFFFFFFF);
+	_context->OMSetDepthStencilState(_stencilWrite, 1);
+	_context->RSSetState(_rasterCullBack);
+	for (auto* geometry : geometries) {
+		DrawGeometry(geometry, viewProj, 0.0f);
+	}
+
+	// Pass 2 - outline: draw the inflated hull, but only where the mask is absent,
+	// so what survives is exactly the band the inflation added around the silhouette.
+	_context->OMSetBlendState(_blendOpaque, nullptr, 0xFFFFFFFF);
+	_context->OMSetDepthStencilState(_stencilTestOutside, 1);
+	_context->RSSetState(_rasterCullFront);
+	for (auto* geometry : geometries) {
+		DrawGeometry(geometry, viewProj, thickness);
 	}
 }
 
-void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_viewProj)
+void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_viewProj, float a_inflate)
 {
 	auto* triShape = a_geometry->AsTriShape();
 	if (!triShape) {
@@ -397,7 +512,7 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 	// into the scale. Scaling about the node origin is a coarser hull than pushing
 	// along normals, but it needs POSITION only - no per-mesh normal decoding.
 	const auto& world = a_geometry->world;
-	const float scale = world.scale * (1.0f + Settings::GetSingleton()->outlineThickness);
+	const float scale = world.scale * (1.0f + a_inflate);
 	const auto& rot = world.rotate;
 
 	Matrix4 worldMatrix{};
