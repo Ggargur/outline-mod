@@ -50,6 +50,12 @@ public:
 	// set this back to 0 - no rebuild needed.
 	bool preUIHook = false;
 
+	// Which vtable slot of the Scaleform renderer to hook. 4 (GRenderer::BeginFrame)
+	// was never called, so the real layout differs. The log dumps the first 20 slots;
+	// only probe ones whose signature is void(this) - 4, 5 and 13 (0xD) - since a
+	// mismatched signature will corrupt the stack.
+	std::int32_t preUIVtableIndex = 4;
+
 	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
 	// "Present hook / render target / shaders are fine" from "geometry or matrix is
 	// wrong" in a single test.

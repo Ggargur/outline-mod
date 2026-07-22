@@ -42,6 +42,7 @@ void Settings::Load()
 	depthSource = static_cast<std::int32_t>(ini.GetLongValue("Highlight", "iDepthSource", depthSource));
 	debugTestQuad = ini.GetBoolValue("Debug", "bTestQuad", debugTestQuad);
 	preUIHook = ini.GetBoolValue("Debug", "bPreUIHook", preUIHook);
+	preUIVtableIndex = static_cast<std::int32_t>(ini.GetLongValue("Debug", "iPreUIVtableIndex", preUIVtableIndex));
 	edgeFalloff = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff));
 	edgeWidth = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeWidth", edgeWidth));
 	fillAlpha = static_cast<float>(ini.GetDoubleValue("Highlight", "fFillAlpha", fillAlpha));
@@ -62,6 +63,7 @@ void Settings::Load()
 	ini.SetLongValue("Highlight", "iDepthSource", depthSource);
 	ini.SetBoolValue("Debug", "bTestQuad", debugTestQuad);
 	ini.SetBoolValue("Debug", "bPreUIHook", preUIHook);
+	ini.SetLongValue("Debug", "iPreUIVtableIndex", preUIVtableIndex);
 	ini.SetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff);
 	ini.SetDoubleValue("Highlight", "fEdgeWidth", edgeWidth);
 	ini.SetDoubleValue("Highlight", "fFillAlpha", fillAlpha);

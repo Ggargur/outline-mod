@@ -82,8 +82,14 @@ float4 PSMain(VSOut input) : SV_Target
 	using BeginFrameFn = void(__fastcall*)(void*);
 	BeginFrameFn g_originalBeginFrame = nullptr;
 
+	bool g_loggedBeginFrameFired = false;
+
 	void __fastcall HookedBeginFrame(void* a_self)
 	{
+		if (!g_loggedBeginFrameFired) {
+			g_loggedBeginFrameFired = true;
+			logger::info("Pre-UI hook FIRED - this vtable slot is called per frame.");
+		}
 		OutlineRenderer::GetSingleton()->OnPresent();
 		g_originalBeginFrame(a_self);
 	}
@@ -153,10 +159,19 @@ void OutlineRenderer::InstallPreUIHook()
 		return;
 	}
 
-	// BSScaleformRenderer is not declared in CommonLibSSE-NG, but it implements
-	// GRenderer, so slot 4 of its primary vtable is BeginFrame.
+	// BSScaleformRenderer is not declared in CommonLibSSE-NG, so its exact vtable
+	// layout is unverified - slot 4 (GRenderer::BeginFrame) turned out never to be
+	// called. The index is configurable so candidates can be probed from the INI
+	// instead of one rebuild per guess.
 	void** vtable = *reinterpret_cast<void***>(manager->renderer);
-	constexpr std::size_t kBeginFrameIndex = 4;
+	const std::size_t kBeginFrameIndex =
+		static_cast<std::size_t>(Settings::GetSingleton()->preUIVtableIndex);
+
+	// Dump the neighbourhood so we can see which slots hold plausible code pointers.
+	logger::info("Scaleform renderer vtable @ {}:", static_cast<void*>(vtable));
+	for (std::size_t i = 0; i < 20; ++i) {
+		logger::info("  [{:02X}] {}", i, vtable[i]);
+	}
 
 	DWORD oldProtect = 0;
 	if (!VirtualProtect(&vtable[kBeginFrameIndex], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
