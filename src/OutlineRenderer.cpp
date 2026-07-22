@@ -27,7 +27,14 @@ cbuffer OutlineCB : register(b0)
     // transpose ours and put the hull somewhere off-screen.
     row_major float4x4 gWorldViewProj;
     float4             gColor;
+    // x: +1 for normal depth (0 near), -1 for reversed depth (1 near).
+    // y: 0 disables the occlusion test entirely.
+    float4             gDepthParams;
 };
+
+// The scene depth buffer. We sample it by pixel coordinate rather than binding it
+// as a depth-stencil view, because our own stencil occupies the DSV slot.
+Texture2D<float> gSceneDepth : register(t0);
 
 struct VSIn  { float3 pos : POSITION; };
 struct VSOut { float4 pos : SV_POSITION; };
@@ -41,6 +48,16 @@ VSOut VSMain(VSIn input)
 
 float4 PSMain(VSOut input) : SV_Target
 {
+    if (gDepthParams.y > 0.5f)
+    {
+        float sceneZ = gSceneDepth.Load(int3(input.pos.xy, 0));
+        // Discard where the scene is in front of this fragment, so walls and other
+        // meshes occlude the outline instead of it drawing through everything.
+        if ((sceneZ - input.pos.z) * gDepthParams.x < 0.0f)
+        {
+            discard;
+        }
+    }
     return gColor;
 }
 )";
@@ -277,6 +294,9 @@ void OutlineRenderer::OnPresent()
 	ID3D11Buffer* oldPSCB = nullptr;
 	_context->PSGetConstantBuffers(0, 1, &oldPSCB);
 
+	ID3D11ShaderResourceView* oldPSSRV = nullptr;
+	_context->PSGetShaderResources(0, 1, &oldPSSRV);
+
 	ID3D11BlendState* oldBlend = nullptr;
 	FLOAT oldBlendFactor[4]{};
 	UINT oldSampleMask = 0;
@@ -322,6 +342,14 @@ void OutlineRenderer::OnPresent()
 		// the first version drew the hull solid black instead of the chosen colour.
 		_context->PSSetConstantBuffers(0, 1, &_cbuffer);
 
+		// Scene depth as an SRV, so the pixel shader can reject occluded fragments.
+		auto& mainDepth = renderer->depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN];
+		auto* depthSRV = reinterpret_cast<ID3D11ShaderResourceView*>(mainDepth.depthSRV);
+		_context->PSSetShaderResources(0, 1, &depthSRV);
+		if (!depthSRV && _frameCounter % 600 == 0) {
+			logger::warn("Main depth SRV is null - outline will not be occluded.");
+		}
+
 		if (debugQuad) {
 			_context->OMSetBlendState(_blendOpaque, nullptr, 0xFFFFFFFF);
 			DrawDebugQuad();
@@ -345,6 +373,7 @@ void OutlineRenderer::OnPresent()
 	_context->PSSetShader(oldPS, nullptr, 0);
 	_context->VSSetConstantBuffers(0, 1, &oldVSCB);
 	_context->PSSetConstantBuffers(0, 1, &oldPSCB);
+	_context->PSSetShaderResources(0, 1, &oldPSSRV);
 
 	// OMGetRenderTargets & friends AddRef their outputs.
 	for (auto* view : oldRTVs) {
@@ -361,6 +390,7 @@ void OutlineRenderer::OnPresent()
 	if (oldPS) oldPS->Release();
 	if (oldVSCB) oldVSCB->Release();
 	if (oldPSCB) oldPSCB->Release();
+	if (oldPSSRV) oldPSSRV->Release();
 }
 
 // Our own stencil target, sized to the back buffer. Recreated if the resolution
@@ -533,6 +563,9 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 	cb.color[1] = s.colorG;
 	cb.color[2] = s.colorB;
 	cb.color[3] = 1.0f;
+	cb.depthParams[0] = s.reverseDepth ? -1.0f : 1.0f;
+	// The mask pass writes no colour, so occlusion only matters for the outline pass.
+	cb.depthParams[1] = (s.occlude && a_inflate > 0.0f) ? 1.0f : 0.0f;
 
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	if (FAILED(_context->Map(_cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {

@@ -32,6 +32,13 @@ public:
 	// Bigger = thicker outline band.
 	float outlineThickness = 0.03f;
 
+	// Hide the outline behind walls and other meshes by testing the scene depth.
+	bool occlude = true;
+
+	// Flip this if occlusion comes out inverted (outline visible ONLY through walls,
+	// or vanishing entirely): it selects the sense of the depth buffer.
+	bool reverseDepth = false;
+
 	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
 	// "Present hook / render target / shaders are fine" from "geometry or matrix is
 	// wrong" in a single test.

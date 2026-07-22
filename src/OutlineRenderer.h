@@ -43,6 +43,7 @@ private:
 	{
 		float worldViewProj[4][4];
 		float color[4];
+		float depthParams[4];  // x: depth sign, y: occlusion on/off
 	};
 
 	bool EnsureResources(ID3D11Device* a_device);
