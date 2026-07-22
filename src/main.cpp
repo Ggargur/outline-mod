@@ -20,7 +20,7 @@ namespace
 		log->flush_on(spdlog::level::info);
 
 		spdlog::set_default_logger(std::move(log));
-		spdlog::set_pattern("[%H:%M:%S] [%^%l%$] %v");
+		spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
 	}
 
 	// Fired by SKSE at well-defined lifecycle points. We wait for kDataLoaded so

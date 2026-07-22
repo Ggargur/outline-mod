@@ -74,7 +74,10 @@ bool HighlightManager::Init()
 	d.fillTextureEffectColorKeyScaleTimeColorKey3Scale = 1.0f;
 	d.fillTextureEffectFullAlphaRatio = std::clamp(s.fillAlpha, 0.0f, 1.0f);
 	d.fillTextureEffectPersistentAlphaRatio = std::clamp(s.fillAlpha, 0.0f, 1.0f);
-	d.fillTextureEffectFullAlphaTime = 1.0f;
+	// No fade: the effect must snap on/off with the crosshair, not linger.
+	d.fillTextureEffectAlphaFadeInTime = 0.0f;
+	d.fillTextureEffectFullAlphaTime = 0.0f;
+	d.fillTextureEffectAlphaFadeOutTime = 0.0f;
 	d.textureCountU = 1.0f;
 	d.textureCountV = 1.0f;
 	d.fillTextureEffectTextureScaleU = 1.0f;
@@ -113,12 +116,14 @@ void HighlightManager::SetTarget(RE::TESObjectREFR* a_ref)
 	if (a_ref) {
 		ApplyShader(a_ref);
 		_current = newHandle;
+		logger::info("APPLY {:08X} ({})", a_ref->GetFormID(), a_ref->GetName());
 	}
 }
 
 void HighlightManager::Clear()
 {
 	if (auto ref = _current.get()) {
+		logger::info("CLEAR {:08X} ({})", ref->GetFormID(), ref->GetName());
 		StopShaderOn(ref.get());
 	}
 	_current = RE::ObjectRefHandle{};
@@ -147,12 +152,19 @@ void HighlightManager::StopShaderOn(RE::TESObjectREFR* a_ref)
 
 	const auto handle = a_ref->CreateRefHandle();
 
+	int matched = 0;
+	int shaderEffectsSeen = 0;
 	processLists->ForEachMagicTempEffect([&](RE::BSTempEffect* a_tempEffect) {
 		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(a_tempEffect)) {
+			++shaderEffectsSeen;
 			if (shaderEffect->effectData == _shader && shaderEffect->target == handle) {
 				shaderEffect->finished = true;  // flags it for removal next update
+				++matched;
 			}
 		}
 		return RE::BSContainer::ForEachResult::kContinue;
 	});
+
+	logger::info("StopShaderOn {:08X}: finished {}/{} shader effect(s)",
+		a_ref->GetFormID(), matched, shaderEffectsSeen);
 }
