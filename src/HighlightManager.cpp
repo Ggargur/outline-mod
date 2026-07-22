@@ -158,7 +158,12 @@ void HighlightManager::StopShaderOn(RE::TESObjectREFR* a_ref)
 		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(a_tempEffect)) {
 			++shaderEffectsSeen;
 			if (shaderEffect->effectData == _shader && shaderEffect->target == handle) {
-				shaderEffect->finished = true;  // flags it for removal next update
+				// finished=true only *schedules* removal (the manager culls it on a
+				// later cycle, during which it keeps rendering). Detach() pulls the
+				// effect's 3D out of the scene right now, so the glow stops this frame.
+				shaderEffect->age = shaderEffect->lifetime + 1.0f;  // force expiry
+				shaderEffect->finished = true;
+				shaderEffect->Detach();
 				++matched;
 			}
 		}
