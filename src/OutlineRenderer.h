@@ -86,6 +86,7 @@ private:
 	bool _resourceInitFailed{ false };
 	bool _loggedFirstDraw{ false };
 	bool _loggedDepthSources{ false };
+	bool _depthSourceResolved{ false };
 	bool _depthAvailable{ false };
 	float _depthScaleX{ 1.0f };
 	float _depthScaleY{ 1.0f };

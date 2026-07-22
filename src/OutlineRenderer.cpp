@@ -407,6 +407,23 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 	// us definitively which target can back the occlusion test.
 	if (!_loggedDepthSources) {
 		_loggedDepthSources = true;
+
+		// Control sample: the framebuffer target is known-good (we successfully draw
+		// into it). If its size also reads 0x0 then we are reading the renderer
+		// struct at the wrong offset and the depth audit below means nothing.
+		{
+			auto& fb = renderer->renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
+			std::uint32_t w = 0, h = 0;
+			if (auto* tex = reinterpret_cast<ID3D11Texture2D*>(fb.texture)) {
+				D3D11_TEXTURE2D_DESC td{};
+				tex->GetDesc(&td);
+				w = td.Width;
+				h = td.Height;
+			}
+			logger::info("CONTROL framebuffer: rtv={} srv={} tex={} size={}x{}",
+				fb.RTV ? "yes" : "no", fb.SRV ? "yes" : "no", fb.texture ? "yes" : "no", w, h);
+		}
+
 		logger::info("--- depth targets (index: srv, size) ---");
 		for (int i = 0; i < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL; ++i) {
 			auto& entry = renderer->depthStencils[i];
@@ -425,7 +442,10 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 
 	const int configured = Settings::GetSingleton()->depthSource;
 
-	if (_depthSourceIndex < 0) {
+	// Resolve once. Keying this off "_depthSourceIndex < 0" meant that when nothing
+	// suitable was found the search - and its log line - repeated every single frame.
+	if (!_depthSourceResolved) {
+		_depthSourceResolved = true;
 		if (configured >= 0 && configured < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
 			_depthSourceIndex = configured;
 		} else {
