@@ -48,6 +48,10 @@ private:
 
 	bool EnsureResources(ID3D11Device* a_device);
 	bool EnsureStencilBuffer();
+
+	// Finds a depth target that is actually readable from a shader. kMAIN only has a
+	// DSV (it is written, never sampled), so the copies have to be used instead.
+	ID3D11ShaderResourceView* PickDepthSRV(void* a_rendererData, float& a_scaleX, float& a_scaleY);
 	void DrawTarget(RE::TESObjectREFR* a_ref);
 	void DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_viewProj, float a_inflate);
 	void DrawDebugQuad();
@@ -81,5 +85,10 @@ private:
 	bool _resourcesReady{ false };
 	bool _resourceInitFailed{ false };
 	bool _loggedFirstDraw{ false };
+	bool _loggedDepthSources{ false };
+	bool _depthAvailable{ false };
+	float _depthScaleX{ 1.0f };
+	float _depthScaleY{ 1.0f };
+	int _depthSourceIndex{ -1 };  // resolved once; -1 = not chosen yet
 	std::uint32_t _frameCounter{ 0 };
 };

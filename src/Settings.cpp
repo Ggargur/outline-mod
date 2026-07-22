@@ -39,6 +39,7 @@ void Settings::Load()
 	outlineThickness = static_cast<float>(ini.GetDoubleValue("Highlight", "fOutlineThickness", outlineThickness));
 	occlude = ini.GetBoolValue("Highlight", "bOcclude", occlude);
 	reverseDepth = ini.GetBoolValue("Highlight", "bReverseDepth", reverseDepth);
+	depthSource = static_cast<std::int32_t>(ini.GetLongValue("Highlight", "iDepthSource", depthSource));
 	debugTestQuad = ini.GetBoolValue("Debug", "bTestQuad", debugTestQuad);
 	edgeFalloff = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff));
 	edgeWidth = static_cast<float>(ini.GetDoubleValue("Highlight", "fEdgeWidth", edgeWidth));
@@ -57,6 +58,7 @@ void Settings::Load()
 	ini.SetDoubleValue("Highlight", "fOutlineThickness", outlineThickness);
 	ini.SetBoolValue("Highlight", "bOcclude", occlude);
 	ini.SetBoolValue("Highlight", "bReverseDepth", reverseDepth);
+	ini.SetLongValue("Highlight", "iDepthSource", depthSource);
 	ini.SetBoolValue("Debug", "bTestQuad", debugTestQuad);
 	ini.SetDoubleValue("Highlight", "fEdgeFalloff", edgeFalloff);
 	ini.SetDoubleValue("Highlight", "fEdgeWidth", edgeWidth);

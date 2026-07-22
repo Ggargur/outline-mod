@@ -39,6 +39,11 @@ public:
 	// or vanishing entirely): it selects the sense of the depth buffer.
 	bool reverseDepth = false;
 
+	// Which depth target to sample. -1 = pick automatically (recommended). The log
+	// lists every target and whether it is sampleable, so a specific index can be
+	// forced here without rebuilding.
+	std::int32_t depthSource = -1;
+
 	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
 	// "Present hook / render target / shaders are fine" from "geometry or matrix is
 	// wrong" in a single test.

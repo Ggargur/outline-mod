@@ -29,6 +29,8 @@ cbuffer OutlineCB : register(b0)
     float4             gColor;
     // x: +1 for normal depth (0 near), -1 for reversed depth (1 near).
     // y: 0 disables the occlusion test entirely.
+    // zw: pixel-coordinate scale, because dynamic resolution can make the depth
+    //     texture a different size from the back buffer.
     float4             gDepthParams;
 };
 
@@ -50,7 +52,8 @@ float4 PSMain(VSOut input) : SV_Target
 {
     if (gDepthParams.y > 0.5f)
     {
-        float sceneZ = gSceneDepth.Load(int3(input.pos.xy, 0));
+        int2 coord = int2(input.pos.xy * gDepthParams.zw);
+        float sceneZ = gSceneDepth.Load(int3(coord, 0));
         // Discard where the scene is in front of this fragment, so walls and other
         // meshes occlude the outline instead of it drawing through everything.
         if ((sceneZ - input.pos.z) * gDepthParams.x < 0.0f)
@@ -343,11 +346,11 @@ void OutlineRenderer::OnPresent()
 		_context->PSSetConstantBuffers(0, 1, &_cbuffer);
 
 		// Scene depth as an SRV, so the pixel shader can reject occluded fragments.
-		auto& mainDepth = renderer->depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN];
-		auto* depthSRV = reinterpret_cast<ID3D11ShaderResourceView*>(mainDepth.depthSRV);
+		auto* depthSRV = PickDepthSRV(renderer, _depthScaleX, _depthScaleY);
 		_context->PSSetShaderResources(0, 1, &depthSRV);
-		if (!depthSRV && _frameCounter % 600 == 0) {
-			logger::warn("Main depth SRV is null - outline will not be occluded.");
+		_depthAvailable = depthSRV != nullptr;
+		if (!_depthAvailable && _frameCounter % 600 == 0) {
+			logger::warn("No sampleable depth target - outline will not be occluded.");
 		}
 
 		if (debugQuad) {
@@ -391,6 +394,80 @@ void OutlineRenderer::OnPresent()
 	if (oldVSCB) oldVSCB->Release();
 	if (oldPSCB) oldPSCB->Release();
 	if (oldPSSRV) oldPSSRV->Release();
+}
+
+ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, float& a_scaleX, float& a_scaleY)
+{
+	auto* renderer = static_cast<RE::BSGraphics::RendererData*>(a_rendererData);
+	a_scaleX = 1.0f;
+	a_scaleY = 1.0f;
+
+	// Audit every depth target once: which ones are sampleable, and at what size.
+	// kMAIN turned out to have no SRV at all (it is a write-only DSV), so this tells
+	// us definitively which target can back the occlusion test.
+	if (!_loggedDepthSources) {
+		_loggedDepthSources = true;
+		logger::info("--- depth targets (index: srv, size) ---");
+		for (int i = 0; i < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL; ++i) {
+			auto& entry = renderer->depthStencils[i];
+			auto* srv = reinterpret_cast<ID3D11ShaderResourceView*>(entry.depthSRV);
+			auto* tex = reinterpret_cast<ID3D11Texture2D*>(entry.texture);
+			std::uint32_t w = 0, h = 0;
+			if (tex) {
+				D3D11_TEXTURE2D_DESC td{};
+				tex->GetDesc(&td);
+				w = td.Width;
+				h = td.Height;
+			}
+			logger::info("  [{}] srv={} size={}x{}", i, srv ? "yes" : "no", w, h);
+		}
+	}
+
+	const int configured = Settings::GetSingleton()->depthSource;
+
+	if (_depthSourceIndex < 0) {
+		if (configured >= 0 && configured < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
+			_depthSourceIndex = configured;
+		} else {
+			// Preference order: the copies exist specifically to be sampled.
+			const int candidates[] = {
+				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN,
+			};
+			for (int candidate : candidates) {
+				if (renderer->depthStencils[candidate].depthSRV) {
+					_depthSourceIndex = candidate;
+					break;
+				}
+			}
+		}
+		logger::info("Using depth source index {}.", _depthSourceIndex);
+	}
+
+	if (_depthSourceIndex < 0) {
+		return nullptr;
+	}
+
+	auto& chosen = renderer->depthStencils[_depthSourceIndex];
+	auto* srv = reinterpret_cast<ID3D11ShaderResourceView*>(chosen.depthSRV);
+	if (!srv) {
+		return nullptr;
+	}
+
+	// Skyrim's dynamic resolution means the depth texture can be larger than the
+	// area actually rendered, so pixel coordinates must be rescaled before sampling.
+	if (auto* tex = reinterpret_cast<ID3D11Texture2D*>(chosen.texture)) {
+		D3D11_TEXTURE2D_DESC td{};
+		tex->GetDesc(&td);
+		if (td.Width && td.Height && _stencilWidth && _stencilHeight) {
+			a_scaleX = static_cast<float>(td.Width) / static_cast<float>(_stencilWidth);
+			a_scaleY = static_cast<float>(td.Height) / static_cast<float>(_stencilHeight);
+		}
+	}
+
+	return srv;
 }
 
 // Our own stencil target, sized to the back buffer. Recreated if the resolution
@@ -565,7 +642,9 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 	cb.color[3] = 1.0f;
 	cb.depthParams[0] = s.reverseDepth ? -1.0f : 1.0f;
 	// The mask pass writes no colour, so occlusion only matters for the outline pass.
-	cb.depthParams[1] = (s.occlude && a_inflate > 0.0f) ? 1.0f : 0.0f;
+	cb.depthParams[1] = (s.occlude && _depthAvailable && a_inflate > 0.0f) ? 1.0f : 0.0f;
+	cb.depthParams[2] = _depthScaleX;
+	cb.depthParams[3] = _depthScaleY;
 
 	D3D11_MAPPED_SUBRESOURCE mapped{};
 	if (FAILED(_context->Map(_cbuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
