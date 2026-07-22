@@ -40,6 +40,9 @@ namespace
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
 			OutlineRenderer::GetSingleton()->InstallHook();
+			if (Settings::GetSingleton()->preUIHook) {
+				OutlineRenderer::GetSingleton()->InstallPreUIHook();
+			}
 			break;
 
 		default:

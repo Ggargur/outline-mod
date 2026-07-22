@@ -44,6 +44,12 @@ public:
 	// forced here without rebuilding.
 	std::int32_t depthSource = -1;
 
+	// Draw the outline just before the UI (hooking the Scaleform renderer) instead of
+	// at Present. Puts the outline underneath the HUD and may make the scene depth
+	// buffer available for occlusion. Experimental: if the game crashes on load,
+	// set this back to 0 - no rebuild needed.
+	bool preUIHook = false;
+
 	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
 	// "Present hook / render target / shaders are fine" from "geometry or matrix is
 	// wrong" in a single test.

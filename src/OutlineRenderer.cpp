@@ -70,8 +70,22 @@ float4 PSMain(VSOut input) : SV_Target
 
 	HRESULT WINAPI HookedPresent(IDXGISwapChain* a_swapChain, UINT a_syncInterval, UINT a_flags)
 	{
-		OutlineRenderer::GetSingleton()->OnPresent();
+		// When the pre-UI hook is active it does the drawing instead, so the outline
+		// ends up beneath the HUD rather than painted over it.
+		if (!Settings::GetSingleton()->preUIHook) {
+			OutlineRenderer::GetSingleton()->OnPresent();
+		}
 		return g_originalPresent(a_swapChain, a_syncInterval, a_flags);
+	}
+
+	// GRenderer::BeginFrame - runs immediately before Scaleform draws the UI.
+	using BeginFrameFn = void(__fastcall*)(void*);
+	BeginFrameFn g_originalBeginFrame = nullptr;
+
+	void __fastcall HookedBeginFrame(void* a_self)
+	{
+		OutlineRenderer::GetSingleton()->OnPresent();
+		g_originalBeginFrame(a_self);
 	}
 
 	// 4x4 multiply, row-vector convention (v * M), matching Skyrim's worldToCam.
@@ -125,6 +139,39 @@ void OutlineRenderer::InstallHook()
 
 	_hookInstalled = true;
 	logger::info("Present hook installed (original at {}).", reinterpret_cast<void*>(g_originalPresent));
+}
+
+void OutlineRenderer::InstallPreUIHook()
+{
+	if (_preUIHookInstalled) {
+		return;
+	}
+
+	auto* manager = RE::BSScaleformManager::GetSingleton();
+	if (!manager || !manager->renderer) {
+		logger::error("Scaleform renderer not available - pre-UI hook not installed.");
+		return;
+	}
+
+	// BSScaleformRenderer is not declared in CommonLibSSE-NG, but it implements
+	// GRenderer, so slot 4 of its primary vtable is BeginFrame.
+	void** vtable = *reinterpret_cast<void***>(manager->renderer);
+	constexpr std::size_t kBeginFrameIndex = 4;
+
+	DWORD oldProtect = 0;
+	if (!VirtualProtect(&vtable[kBeginFrameIndex], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+		logger::error("VirtualProtect failed for GRenderer::BeginFrame.");
+		return;
+	}
+
+	g_originalBeginFrame = reinterpret_cast<BeginFrameFn>(vtable[kBeginFrameIndex]);
+	vtable[kBeginFrameIndex] = reinterpret_cast<void*>(&HookedBeginFrame);
+
+	VirtualProtect(&vtable[kBeginFrameIndex], sizeof(void*), oldProtect, &oldProtect);
+
+	_preUIHookInstalled = true;
+	logger::info("Pre-UI hook installed (GRenderer::BeginFrame original at {}).",
+		reinterpret_cast<void*>(g_originalBeginFrame));
 }
 
 bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)

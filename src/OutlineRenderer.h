@@ -25,7 +25,13 @@ public:
 	// Patch IDXGISwapChain::Present. Safe to call more than once.
 	void InstallHook();
 
-	// Called from the Present hook, once per frame.
+	// Patch GRenderer::BeginFrame on the live Scaleform renderer, which runs just
+	// before the UI is drawn. Lets the outline sit under the HUD, and gives access to
+	// the frame at a point where the scene depth buffer still exists. The vtable
+	// comes from a live object, so no version-specific address is needed.
+	void InstallPreUIHook();
+
+	// Called from whichever hook is active, once per frame.
 	void OnPresent();
 
 private:
@@ -82,6 +88,7 @@ private:
 	ID3D11Buffer* _debugQuadVB{ nullptr };
 
 	bool _hookInstalled{ false };
+	bool _preUIHookInstalled{ false };
 	bool _resourcesReady{ false };
 	bool _resourceInitFailed{ false };
 	bool _loggedFirstDraw{ false };
