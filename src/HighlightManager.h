@@ -1,41 +1,30 @@
 #pragma once
 
-#include <cstdint>
-
 namespace RE
 {
 	class TESObjectREFR;
-	class TESEffectShader;
 }
 
-// Owns the "which reference is currently outlined" state and applies/removes the
-// edge effect shader. Uses only the game's native EffectShader path, so it plays
-// nicely with Community Shaders / ENB with no render-pipeline hooking.
+// Holds which reference is currently outlined. The actual drawing is done by
+// OutlineRenderer at Present time - this is just the shared state between the
+// crosshair polling (game thread) and the render hook.
+//
+// Nothing here touches the game's effect-shader system any more: that system only
+// lets you *request* removal, and the manager culls the effect ~1-2s later while it
+// keeps rendering, which is what caused the lingering outlines.
 class HighlightManager
 {
 public:
 	static HighlightManager* GetSingleton();
 
-	// Build the edge effect shader at runtime (no ESP required) from the values in
-	// Settings. Returns false if the form could not be created -> disable feature.
-	bool Init();
-
-	// Highlight a_ref (clearing any previous target first). Passing nullptr just
-	// clears the current highlight.
+	// Called every frame from the crosshair poll. Passing nullptr clears it.
 	void SetTarget(RE::TESObjectREFR* a_ref);
 
-	// Remove the highlight from whatever is currently highlighted.
-	void Clear();
+	// Resolved target, or nullptr. Safe to call from the render hook.
+	RE::TESObjectREFR* GetTarget() const;
 
 private:
 	HighlightManager() = default;
 
-	void ApplyShader(RE::TESObjectREFR* a_ref);
-	void StopShaderOn(RE::TESObjectREFR* a_ref);
-
-	RE::TESEffectShader* _shader{ nullptr };
-
-	// Handle (not raw pointer) to the currently highlighted ref, so we never
-	// dereference a freed object across frames. Default-constructed == invalid.
 	RE::ObjectRefHandle _current;
 };

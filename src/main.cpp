@@ -2,6 +2,7 @@
 
 #include "CrosshairWatcher.h"
 #include "HighlightManager.h"
+#include "OutlineRenderer.h"
 #include "Settings.h"
 
 namespace
@@ -23,21 +24,24 @@ namespace
 		spdlog::set_pattern("[%H:%M:%S.%e] [%^%l%$] %v");
 	}
 
-	// Fired by SKSE at well-defined lifecycle points. We wait for kDataLoaded so
-	// that TESDataHandler has the load order and our effect-shader form is available.
+	// Fired by SKSE at well-defined lifecycle points.
 	void OnMessage(SKSE::MessagingInterface::Message* a_msg)
 	{
 		switch (a_msg->type) {
 		case SKSE::MessagingInterface::kDataLoaded:
 			Settings::GetSingleton()->Load();
-
-			if (HighlightManager::GetSingleton()->Init()) {
-				CrosshairWatcher::GetSingleton()->Install();
-				logger::info("ItemOutline ready - watching crosshair.");
-			} else {
-				logger::error("ItemOutline disabled: could not create the edge effect shader.");
-			}
+			CrosshairWatcher::GetSingleton()->Install();
+			logger::info("ItemOutline ready - watching crosshair.");
 			break;
+
+		// The swap chain only exists once the renderer is up, so the Present hook
+		// goes here rather than at kDataLoaded. Both messages are handled because
+		// either can be the first time we reach a live render loop.
+		case SKSE::MessagingInterface::kPostLoadGame:
+		case SKSE::MessagingInterface::kNewGame:
+			OutlineRenderer::GetSingleton()->InstallHook();
+			break;
+
 		default:
 			break;
 		}

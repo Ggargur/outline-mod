@@ -28,6 +28,15 @@ public:
 	float colorG = 0.85f;
 	float colorB = 0.20f;
 
+	// Inverted-hull inflation, as a fraction of the object's size. 0.03 = 3% bigger.
+	// Bigger = thicker outline band.
+	float outlineThickness = 0.03f;
+
+	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
+	// "Present hook / render target / shaders are fine" from "geometry or matrix is
+	// wrong" in a single test.
+	bool debugTestQuad = false;
+
 	// Rim tightness: higher = thinner rim hugging the silhouette.
 	float edgeFalloff = 2.5f;
 	// Edge width in alpha units (game-space thickness of the glow band).
