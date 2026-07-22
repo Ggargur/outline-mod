@@ -5,6 +5,7 @@
 #include "Settings.h"
 
 #include <algorithm>
+#include <vector>
 
 namespace
 {
@@ -152,30 +153,30 @@ void HighlightManager::StopShaderOn(RE::TESObjectREFR* a_ref)
 
 	const auto handle = a_ref->CreateRefHandle();
 
-	int matched = 0;
+	// Collect first. Mutating an effect *during* ForEachMagicTempEffect runs under
+	// the manager's lock and crashed the game, so we only read here and act after.
+	std::vector<RE::ShaderReferenceEffect*> ours;
 	int shaderEffectsSeen = 0;
 	processLists->ForEachMagicTempEffect([&](RE::BSTempEffect* a_tempEffect) {
 		if (auto* shaderEffect = skyrim_cast<RE::ShaderReferenceEffect*>(a_tempEffect)) {
 			++shaderEffectsSeen;
 			if (shaderEffect->effectData == _shader && shaderEffect->target == handle) {
-				// finished=true only *schedules* removal - the manager culls the
-				// effect on a later cycle, during which it keeps rendering (that is
-				// the lingering). Everything below is a plain field write (safe here,
-				// unlike Detach()/vfuncs which mutate the scene graph and crash when
-				// called during this locked iteration):
-				//  - clear kVisible so it stops drawing this frame,
-				//  - force age past lifetime so Update() returns false -> culled next tick,
-				//  - finished as a backstop for cleanup.
-				shaderEffect->flags.reset(RE::ShaderReferenceEffect::Flag::kVisible);
-				shaderEffect->lifetime = 0.0f;
-				shaderEffect->age = 1.0f;
-				shaderEffect->finished = true;
-				++matched;
+				ours.push_back(shaderEffect);
 			}
 		}
 		return RE::BSContainer::ForEachResult::kContinue;
 	});
 
+	// Detach() is what actually pulls the effect's 3D out of the scene; field writes
+	// (kVisible / lifetime / age / finished) proved unable to stop the rendering, and
+	// the manager only culls ~1-2s later. Done outside the locked iteration now.
+	for (auto* shaderEffect : ours) {
+		logger::info("  fx pushCount={} lifetime={:.2f} age={:.2f}",
+			shaderEffect->pushCount, shaderEffect->lifetime, shaderEffect->age);
+		shaderEffect->finished = true;
+		shaderEffect->Detach();
+	}
+
 	logger::info("StopShaderOn {:08X}: finished {}/{} shader effect(s)",
-		a_ref->GetFormID(), matched, shaderEffectsSeen);
+		a_ref->GetFormID(), ours.size(), shaderEffectsSeen);
 }
