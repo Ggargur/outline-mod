@@ -563,19 +563,28 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 				fb.RTV ? "yes" : "no", fb.SRV ? "yes" : "no", fb.texture ? "yes" : "no", w, h);
 		}
 
-		logger::info("--- depth targets (index: srv, size) ---");
+		// srv  = sampleable in a pixel shader (what the current occlusion path needs).
+		// dsv/rodsv = a (read-only) depth-stencil view we could hardware-depth-test
+		//   against instead - these survive to the end of the frame even when the SRV
+		//   copies do not, which is the situation on a late (pre-UI) draw.
+		// fmt  = texture format, so a depth copy's feasibility can be judged.
+		logger::info("--- depth targets (index: srv dsv rodsv fmt size) ---");
 		for (int i = 0; i < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL; ++i) {
 			auto& entry = renderer->depthStencils[i];
 			auto* srv = reinterpret_cast<ID3D11ShaderResourceView*>(entry.depthSRV);
+			auto* dsv = reinterpret_cast<ID3D11DepthStencilView*>(entry.views[0]);
+			auto* rodsv = reinterpret_cast<ID3D11DepthStencilView*>(entry.readOnlyViews[0]);
 			auto* tex = reinterpret_cast<ID3D11Texture2D*>(entry.texture);
-			std::uint32_t w = 0, h = 0;
+			std::uint32_t w = 0, h = 0, fmt = 0;
 			if (tex) {
 				D3D11_TEXTURE2D_DESC td{};
 				tex->GetDesc(&td);
 				w = td.Width;
 				h = td.Height;
+				fmt = static_cast<std::uint32_t>(td.Format);
 			}
-			logger::info("  [{}] srv={} size={}x{}", i, srv ? "yes" : "no", w, h);
+			logger::info("  [{}] srv={} dsv={} rodsv={} fmt={} size={}x{}",
+				i, srv ? "yes" : "no", dsv ? "yes" : "no", rodsv ? "yes" : "no", fmt, w, h);
 		}
 	}
 
