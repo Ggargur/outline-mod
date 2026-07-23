@@ -453,14 +453,23 @@ void OutlineRenderer::Draw()
 		_context->ClearDepthStencilView(_stencilView, D3D11_CLEAR_STENCIL, 1.0f, 0);
 		_context->OMSetRenderTargets(1, &rtv, _stencilView);
 
-		// Set our own full-target viewport rather than inheriting whatever the UI or
-		// the last scene pass left bound.
+		// Cover the whole target, but INHERIT the game's depth range. The rasterizer
+		// maps NDC z through MinDepth/MaxDepth to produce SV_Position.z, so forcing
+		// 0..1 here while the game rendered its depth buffer with a different (or
+		// inverted) range would put our fragment depth in a different space from the
+		// buffer we compare it against - and the test would then pass everywhere.
 		D3D11_VIEWPORT viewport{};
 		viewport.Width = static_cast<float>(_stencilWidth);
 		viewport.Height = static_cast<float>(_stencilHeight);
-		viewport.MinDepth = 0.0f;
-		viewport.MaxDepth = 1.0f;
+		viewport.MinDepth = oldViewportCount > 0 ? oldViewports[0].MinDepth : 0.0f;
+		viewport.MaxDepth = oldViewportCount > 0 ? oldViewports[0].MaxDepth : 1.0f;
 		_context->RSSetViewports(1, &viewport);
+
+		if (!_loggedViewport) {
+			_loggedViewport = true;
+			logger::info("Viewport {}x{} depth range [{}, {}] (inherited from {} bound viewport(s)).",
+				_stencilWidth, _stencilHeight, viewport.MinDepth, viewport.MaxDepth, oldViewportCount);
+		}
 
 		_context->IASetInputLayout(_inputLayout);
 		_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -667,14 +676,15 @@ bool OutlineRenderer::EnsureStencilBuffer()
 }
 
 // Which end of the depth range is "near" is a property of the projection the game
-// rendered with - and that is the very matrix we are holding. So rather than asking
-// the user to guess, project two points at different view depths and see which way
-// z/w moves. Recomputed every frame (cheap, and survives a projection change);
-// 0 means indeterminate, which disables the test rather than inverting it.
+// rendered with. Probe it: project two points at different view depths and see which
+// way the resulting z moves. 0 means indeterminate, which disables the test rather
+// than inverting it.
 //
-// This mirrors what glyph's nameplate depth clip does for the same problem
-// (ComputeDepthPolarity in its Renderer.cpp).
-void OutlineRenderer::ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos)
+// This goes through the game's own NiCamera::WorldPtToScreenPt3 rather than our
+// matrix, because that routine also applies the camera's viewport (port) - so the z
+// it returns is in the same space as the depth buffer, which is the whole point of
+// the comparison. glyph's ComputeDepthPolarity resolves the same problem the same way.
+void OutlineRenderer::ResolveDepthSense(const RE::NiPoint3& a_worldPos)
 {
 	if (const int forced = Settings::GetSingleton()->reverseDepth; forced >= 0) {
 		_depthSign = forced ? -1.0f : 1.0f;
@@ -691,33 +701,22 @@ void OutlineRenderer::ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiP
 	if (!camera) {
 		return;
 	}
+	const auto& runtime = camera->GetRuntimeData();
+	const auto& runtime2 = camera->GetRuntimeData2();
 	const auto& camPos = camera->world.translate;
 
-
-	// Same screen position, twice the distance.
+	// Same screen position, twice the distance from the camera.
 	const RE::NiPoint3 farPoint = camPos + (a_worldPos - camPos) * 2.0f;
 
-	const auto projectZ = [&a_viewProj](const RE::NiPoint3& a_p, float& a_out) {
-		const float z = a_p.x * a_viewProj.m[0][2] + a_p.y * a_viewProj.m[1][2] +
-		                a_p.z * a_viewProj.m[2][2] + a_viewProj.m[3][2];
-		const float w = a_p.x * a_viewProj.m[0][3] + a_p.y * a_viewProj.m[1][3] +
-		                a_p.z * a_viewProj.m[2][3] + a_viewProj.m[3][3];
-		if (w <= 0.0001f) {
-			return false;
-		}
-		a_out = z / w;
-		return true;
-	};
-
-	float nearZ = 0.0f;
-	float farZ = 0.0f;
-	if (!projectZ(a_worldPos, nearZ) || !projectZ(farPoint, farZ)) {
-		return;  // behind the camera this frame; try again next one
+	float x = 0.0f, y = 0.0f, nearZ = 0.0f, farZ = 0.0f;
+	if (!RE::NiCamera::WorldPtToScreenPt3(runtime.worldToCam, runtime2.port, a_worldPos, x, y, nearZ, 1e-5f) ||
+		!RE::NiCamera::WorldPtToScreenPt3(runtime.worldToCam, runtime2.port, farPoint, x, y, farZ, 1e-5f)) {
+		return;  // off-screen or behind the camera this frame; try again next one
 	}
 
 	const float delta = farZ - nearZ;
-	if (std::fabs(delta) < 1e-6f) {
-		return;  // degenerate - inconclusive, don't lock in a guess
+	if (std::fabs(delta) < 1e-7f) {
+		return;  // degenerate - inconclusive, don't guess
 	}
 
 	_depthSign = delta > 0.0f ? 1.0f : -1.0f;
@@ -750,7 +749,7 @@ void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 		}
 	}
 
-	ResolveDepthSense(viewProj, root->world.translate);
+	ResolveDepthSense(root->world.translate);
 
 	if (!_loggedFirstDraw) {
 		_loggedFirstDraw = true;

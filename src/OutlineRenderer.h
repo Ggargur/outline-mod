@@ -69,8 +69,9 @@ private:
 
 	// Works out whether the scene depth buffer has 0 or 1 at the near plane, by
 	// projecting two points that share a screen position at different distances
-	// through the very matrix the game rendered the scene with.
-	void ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos);
+	// through the game's own NiCamera::WorldPtToScreenPt3 (which applies the camera
+	// viewport, so its z is in the depth buffer's space).
+	void ResolveDepthSense(const RE::NiPoint3& a_worldPos);
 
 	// Finds a depth target that is actually readable from a shader: kPOST_ZPREPASS_COPY
 	// is the one the rest of the ecosystem samples, with kMAIN as a last resort.
@@ -122,6 +123,7 @@ private:
 	// (which disables the occlusion test). Recomputed every frame.
 	float _depthSign{ 0.0f };
 	bool _loggedDepthSense{ false };
+	bool _loggedViewport{ false };
 
 	float _depthScaleX{ 1.0f };
 	float _depthScaleY{ 1.0f };
