@@ -7,6 +7,8 @@
 
 #include <d3dcompiler.h>
 
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <vector>
 
@@ -70,28 +72,22 @@ float4 PSMain(VSOut input) : SV_Target
 
 	HRESULT WINAPI HookedPresent(IDXGISwapChain* a_swapChain, UINT a_syncInterval, UINT a_flags)
 	{
-		// When the pre-UI hook is active it does the drawing instead, so the outline
-		// ends up beneath the HUD rather than painted over it.
-		if (!Settings::GetSingleton()->preUIHook) {
-			OutlineRenderer::GetSingleton()->OnPresent();
-		}
+		// Delimits the frame. Draws only if the pre-UI path didn't already - i.e. when
+		// that hook isn't installed, or when no menu was rendered this frame at all.
+		OutlineRenderer::GetSingleton()->OnFrameEnd();
 		return g_originalPresent(a_swapChain, a_syncInterval, a_flags);
 	}
 
-	// GRenderer::BeginFrame - runs immediately before Scaleform draws the UI.
-	using BeginFrameFn = void(__fastcall*)(void*);
-	BeginFrameFn g_originalBeginFrame = nullptr;
+	// GRenderer::BeginDisplay - runs immediately before Scaleform draws a movie. Its
+	// arguments are only passed through; we never look at them.
+	using BeginDisplayFn = void(__fastcall*)(void*, RE::GColor, const RE::GViewport&, float, float, float, float);
+	BeginDisplayFn g_originalBeginDisplay = nullptr;
 
-	bool g_loggedBeginFrameFired = false;
-
-	void __fastcall HookedBeginFrame(void* a_self)
+	void __fastcall HookedBeginDisplay(void* a_self, RE::GColor a_background, const RE::GViewport& a_viewport,
+		float a_x0, float a_x1, float a_y0, float a_y1)
 	{
-		if (!g_loggedBeginFrameFired) {
-			g_loggedBeginFrameFired = true;
-			logger::info("Pre-UI hook FIRED - this vtable slot is called per frame.");
-		}
-		OutlineRenderer::GetSingleton()->OnPresent();
-		g_originalBeginFrame(a_self);
+		OutlineRenderer::GetSingleton()->OnPreUIDraw();
+		g_originalBeginDisplay(a_self, a_background, a_viewport, a_x0, a_x1, a_y0, a_y1);
 	}
 
 	// 4x4 multiply, row-vector convention (v * M), matching Skyrim's worldToCam.
@@ -153,40 +149,37 @@ void OutlineRenderer::InstallPreUIHook()
 		return;
 	}
 
+	// BSScaleformRenderer is NOT polymorphic - it is just { GPtr<GFxRenderConfig> }.
+	// The previous version took its vtable directly, which actually read
+	// GFxRenderConfig's, and that is why slot 4 was never called. The real GRenderer
+	// lives one level deeper.
 	auto* manager = RE::BSScaleformManager::GetSingleton();
-	if (!manager || !manager->renderer) {
-		logger::error("Scaleform renderer not available - pre-UI hook not installed.");
+	auto* config = (manager && manager->renderer) ? manager->renderer->config.get() : nullptr;
+	auto* renderer = config ? config->GetRenderer() : nullptr;
+	if (!renderer) {
+		logger::error("Scaleform GRenderer not available - pre-UI hook not installed.");
 		return;
 	}
 
-	// BSScaleformRenderer is not declared in CommonLibSSE-NG, so its exact vtable
-	// layout is unverified - slot 4 (GRenderer::BeginFrame) turned out never to be
-	// called. The index is configurable so candidates can be probed from the INI
-	// instead of one rebuild per guess.
-	void** vtable = *reinterpret_cast<void***>(manager->renderer);
-	const std::size_t kBeginFrameIndex =
-		static_cast<std::size_t>(Settings::GetSingleton()->preUIVtableIndex);
-
-	// Dump the neighbourhood so we can see which slots hold plausible code pointers.
-	logger::info("Scaleform renderer vtable @ {}:", static_cast<void*>(vtable));
-	for (std::size_t i = 0; i < 20; ++i) {
-		logger::info("  [{:02X}] {}", i, vtable[i]);
-	}
+	// GRenderer vtable (RE/G/GRenderer.h): 0C = BeginDisplay. Pure virtual there, so
+	// the game's renderer definitely implements it and it runs for every movie drawn.
+	void** vtable = *reinterpret_cast<void***>(renderer);
+	constexpr std::size_t kBeginDisplayIndex = 0x0C;
 
 	DWORD oldProtect = 0;
-	if (!VirtualProtect(&vtable[kBeginFrameIndex], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-		logger::error("VirtualProtect failed for GRenderer::BeginFrame.");
+	if (!VirtualProtect(&vtable[kBeginDisplayIndex], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
+		logger::error("VirtualProtect failed for GRenderer::BeginDisplay.");
 		return;
 	}
 
-	g_originalBeginFrame = reinterpret_cast<BeginFrameFn>(vtable[kBeginFrameIndex]);
-	vtable[kBeginFrameIndex] = reinterpret_cast<void*>(&HookedBeginFrame);
+	g_originalBeginDisplay = reinterpret_cast<BeginDisplayFn>(vtable[kBeginDisplayIndex]);
+	vtable[kBeginDisplayIndex] = reinterpret_cast<void*>(&HookedBeginDisplay);
 
-	VirtualProtect(&vtable[kBeginFrameIndex], sizeof(void*), oldProtect, &oldProtect);
+	VirtualProtect(&vtable[kBeginDisplayIndex], sizeof(void*), oldProtect, &oldProtect);
 
 	_preUIHookInstalled = true;
-	logger::info("Pre-UI hook installed (GRenderer::BeginFrame original at {}).",
-		reinterpret_cast<void*>(g_originalBeginFrame));
+	logger::info("Pre-UI hook installed on GRenderer {} (BeginDisplay original at {}).",
+		static_cast<void*>(renderer), reinterpret_cast<void*>(g_originalBeginDisplay));
 }
 
 bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
@@ -233,13 +226,23 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &_vs);
 	_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &_ps);
 
-	// --- Input layout: POSITION only, stride comes from the mesh's VertexDesc ----
-	const D3D11_INPUT_ELEMENT_DESC layout[] = {
+	// --- Input layouts: POSITION only, stride comes from the mesh's VertexDesc ----
+	// Skyrim stores POSITION as float32x3 when the mesh carries VF_FULLPREC, and as
+	// float16x4 otherwise, so one layout per encoding. Both feed the same VS.
+	const D3D11_INPUT_ELEMENT_DESC fullLayout[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	};
-	hr = _device->CreateInputLayout(layout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayout);
+	hr = _device->CreateInputLayout(fullLayout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayoutFull);
 	if (FAILED(hr)) {
-		logger::error("CreateInputLayout failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
+		logger::error("CreateInputLayout (full precision) failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
+	}
+
+	const D3D11_INPUT_ELEMENT_DESC halfLayout[] = {
+		{ "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+	};
+	hr = _device->CreateInputLayout(halfLayout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayoutHalf);
+	if (FAILED(hr)) {
+		logger::error("CreateInputLayout (half precision) failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
 	}
 
 	vsBlob->Release();
@@ -298,7 +301,7 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	bd.RenderTarget[0].RenderTargetWriteMask = 0;  // mask pass writes stencil only
 	_device->CreateBlendState(&bd, &_blendNoColorWrite);
 
-	_resourcesReady = _vs && _ps && _inputLayout && _cbuffer &&
+	_resourcesReady = _vs && _ps && _inputLayoutFull && _inputLayoutHalf && _cbuffer &&
 	                  _rasterCullFront && _rasterCullBack &&
 	                  _stencilWrite && _stencilTestOutside &&
 	                  _blendOpaque && _blendNoColorWrite;
@@ -311,7 +314,38 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	return _resourcesReady;
 }
 
-void OutlineRenderer::OnPresent()
+void OutlineRenderer::OnPreUIDraw()
+{
+	if (_uiDrawnThisFrame) {
+		return;  // only the first movie of the frame; the rest layer on top of us
+	}
+	_uiDrawnThisFrame = true;
+
+	if (!_loggedDrawPath) {
+		_loggedDrawPath = true;
+		logger::info("Drawing pre-UI (Scaleform BeginDisplay) - outline sits under the HUD.");
+	}
+
+	_drawingPreUI = true;
+	Draw();
+	_drawingPreUI = false;
+}
+
+void OutlineRenderer::OnFrameEnd()
+{
+	if (!_uiDrawnThisFrame) {
+		// No menu rendered this frame (or the pre-UI hook isn't installed): fall back
+		// to drawing here, which still shows the outline - just over the UI.
+		if (!_loggedDrawPath) {
+			_loggedDrawPath = true;
+			logger::info("Drawing at Present - outline will be painted over the UI.");
+		}
+		Draw();
+	}
+	_uiDrawnThisFrame = false;
+}
+
+void OutlineRenderer::Draw()
 {
 	++_frameCounter;
 
@@ -374,6 +408,12 @@ void OutlineRenderer::OnPresent()
 	ID3D11RasterizerState* oldRS = nullptr;
 	_context->RSGetState(&oldRS);
 
+	// Drawing pre-UI means Scaleform has its own viewport set up and expects to find
+	// it untouched when it resumes.
+	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT]{};
+	UINT oldViewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT;
+	_context->RSGetViewports(&oldViewportCount, oldViewports);
+
 	ID3D11InputLayout* oldLayout = nullptr;
 	_context->IAGetInputLayout(&oldLayout);
 
@@ -389,15 +429,27 @@ void OutlineRenderer::OnPresent()
 	_context->VSGetConstantBuffers(0, 1, &oldVSCB);
 
 	// ---- Bind our pipeline ----
-	// Draw into the final framebuffer (post-processing already ran), testing against
-	// the main depth buffer through a READ-ONLY view so we never write depth.
+	// Draw into the final framebuffer (post-processing already ran), with our own
+	// stencil buffer as the DSV. The scene depth goes in as an SRV instead, so we can
+	// occlude against it without ever writing to the game's depth buffer. Binding the
+	// render targets first also guarantees the depth target is off the DSV slot before
+	// we bind it for reading.
 	auto& frameBuffer = renderer->renderTargets[RE::RENDER_TARGET::kFRAMEBUFFER];
 	auto* rtv = reinterpret_cast<ID3D11RenderTargetView*>(frameBuffer.RTV);
 
 	if (rtv) {
 		_context->ClearDepthStencilView(_stencilView, D3D11_CLEAR_STENCIL, 1.0f, 0);
 		_context->OMSetRenderTargets(1, &rtv, _stencilView);
-		_context->IASetInputLayout(_inputLayout);
+
+		// Set our own full-target viewport rather than inheriting whatever the UI or
+		// the last scene pass left bound.
+		D3D11_VIEWPORT viewport{};
+		viewport.Width = static_cast<float>(_stencilWidth);
+		viewport.Height = static_cast<float>(_stencilHeight);
+		viewport.MinDepth = 0.0f;
+		viewport.MaxDepth = 1.0f;
+		_context->RSSetViewports(1, &viewport);
+
 		_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		_context->VSSetShader(_vs, nullptr, 0);
 		_context->PSSetShader(_ps, nullptr, 0);
@@ -426,10 +478,14 @@ void OutlineRenderer::OnPresent()
 	}
 
 	// ---- Restore ----
+	// Shader resources first: the depth target we sampled is very often the same
+	// resource as the DSV being restored, and D3D refuses to have it bound both ways.
+	_context->PSSetShaderResources(0, 1, &oldPSSRV);
 	_context->OMSetRenderTargets(kMaxRTVs, oldRTVs, oldDSV);
 	_context->OMSetBlendState(oldBlend, oldBlendFactor, oldSampleMask);
 	_context->OMSetDepthStencilState(oldDSS, oldStencilRef);
 	_context->RSSetState(oldRS);
+	_context->RSSetViewports(oldViewportCount, oldViewports);
 	_context->IASetInputLayout(oldLayout);
 	_context->IASetPrimitiveTopology(oldTopology);
 	_context->IASetVertexBuffers(0, 1, &oldVB, &oldVBStride, &oldVBOffset);
@@ -438,7 +494,6 @@ void OutlineRenderer::OnPresent()
 	_context->PSSetShader(oldPS, nullptr, 0);
 	_context->VSSetConstantBuffers(0, 1, &oldVSCB);
 	_context->PSSetConstantBuffers(0, 1, &oldPSCB);
-	_context->PSSetShaderResources(0, 1, &oldPSSRV);
 
 	// OMGetRenderTargets & friends AddRef their outputs.
 	for (auto* view : oldRTVs) {
@@ -511,14 +566,22 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 		if (configured >= 0 && configured < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
 			_depthSourceIndex = configured;
 		} else {
-			// Preference order: the copies exist specifically to be sampled.
-			const int candidates[] = {
-				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY,
-				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY,
-				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY,
-				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN,
+			// Mid-frame (pre-UI) the main depth buffer still holds this frame's scene,
+			// so prefer it there. At Present it may already have been recycled, so the
+			// copies - which exist specifically to be sampled - come first instead.
+			const std::array preUICandidates{
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY),
 			};
-			for (int candidate : candidates) {
+			const std::array presentCandidates{
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY),
+				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN),
+			};
+			for (int candidate : _drawingPreUI ? preUICandidates : presentCandidates) {
 				if (renderer->depthStencils[candidate].depthSRV) {
 					_depthSourceIndex = candidate;
 					break;
@@ -595,6 +658,62 @@ bool OutlineRenderer::EnsureStencilBuffer()
 	return true;
 }
 
+// Which end of the depth range is "near" is a property of the projection the game
+// rendered with - and that is the very matrix we are holding. So rather than asking
+// the user to guess (the old bReverseDepth), project two points that land on the same
+// pixel at different distances and see which way z/w moves.
+void OutlineRenderer::ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos)
+{
+	if (_depthSign != 0.0f) {
+		return;
+	}
+
+	if (const int forced = Settings::GetSingleton()->reverseDepth; forced >= 0) {
+		_depthSign = forced ? -1.0f : 1.0f;
+		logger::info("Depth sense forced by INI: {}.", forced ? "reversed" : "normal");
+		return;
+	}
+
+	auto* camera = RE::Main::WorldRootCamera();
+	if (!camera) {
+		return;
+	}
+	const auto& camPos = camera->world.translate;
+
+	// Same screen position, twice the distance.
+	const RE::NiPoint3 farPoint = camPos + (a_worldPos - camPos) * 2.0f;
+
+	const auto projectZ = [&a_viewProj](const RE::NiPoint3& a_p, float& a_out) {
+		const float z = a_p.x * a_viewProj.m[0][2] + a_p.y * a_viewProj.m[1][2] +
+		                a_p.z * a_viewProj.m[2][2] + a_viewProj.m[3][2];
+		const float w = a_p.x * a_viewProj.m[0][3] + a_p.y * a_viewProj.m[1][3] +
+		                a_p.z * a_viewProj.m[2][3] + a_viewProj.m[3][3];
+		if (w <= 0.0001f) {
+			return false;
+		}
+		a_out = z / w;
+		return true;
+	};
+
+	float nearZ = 0.0f;
+	float farZ = 0.0f;
+	if (!projectZ(a_worldPos, nearZ) || !projectZ(farPoint, farZ)) {
+		return;  // behind the camera this frame; try again next one
+	}
+
+	const float delta = farZ - nearZ;
+	if (std::fabs(delta) < 1e-6f) {
+		return;  // degenerate - inconclusive, don't lock in a guess
+	}
+
+	_depthSign = delta > 0.0f ? 1.0f : -1.0f;
+	if (!_loggedDepthSense) {
+		_loggedDepthSense = true;
+		logger::info("Depth sense auto-detected: {} (near={:.6f} far={:.6f}).",
+			_depthSign > 0.0f ? "normal (0 at near)" : "reversed (1 at near)", nearZ, farZ);
+	}
+}
+
 void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 {
 	auto* root = a_ref ? a_ref->Get3D() : nullptr;
@@ -616,6 +735,8 @@ void OutlineRenderer::DrawTarget(RE::TESObjectREFR* a_ref)
 			viewProj.m[r][c] = w2c[c][r];
 		}
 	}
+
+	ResolveDepthSense(viewProj, root->world.translate);
 
 	if (!_loggedFirstDraw) {
 		_loggedFirstDraw = true;
@@ -691,11 +812,22 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 	}
 
 	auto& vertexDesc = a_geometry->GetGeometryRuntimeData().vertexDesc;
-	const UINT stride = vertexDesc.GetSize();
 	const UINT positionOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
+
+	// The true stride is encoded in the low nibble of the descriptor, in 4-byte units.
+	// VertexDesc::GetSize() recomputes it from the flags and assumes POSITION is always
+	// float32x4, which is wrong for the (common) half-precision meshes.
+	const std::uint64_t rawDesc = *reinterpret_cast<const std::uint64_t*>(&vertexDesc);
+	UINT stride = static_cast<UINT>((rawDesc & 0xF) * 4);
+	if (stride == 0 || stride > 64) {
+		stride = vertexDesc.GetSize();  // implausible - fall back
+	}
 	if (stride == 0) {
 		return;
 	}
+
+	const bool fullPrecision = vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC);
+	_context->IASetInputLayout(fullPrecision ? _inputLayoutFull : _inputLayoutHalf);
 
 	// World transform, converted to row-vector convention, with the inflation baked
 	// into the scale. Scaling about the node origin is a coarser hull than pushing
@@ -722,9 +854,12 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 	cb.color[1] = s.colorG;
 	cb.color[2] = s.colorB;
 	cb.color[3] = 1.0f;
-	cb.depthParams[0] = s.reverseDepth ? -1.0f : 1.0f;
+	cb.depthParams[0] = _depthSign;
 	// The mask pass writes no colour, so occlusion only matters for the outline pass.
-	cb.depthParams[1] = (s.occlude && _depthAvailable && a_inflate > 0.0f) ? 1.0f : 0.0f;
+	// _depthSign == 0 means the sense hasn't been established yet; skip the test rather
+	// than risk showing the outline exactly where it should be hidden.
+	cb.depthParams[1] =
+		(s.occlude && _depthAvailable && _depthSign != 0.0f && a_inflate > 0.0f) ? 1.0f : 0.0f;
 	cb.depthParams[2] = _depthScaleX;
 	cb.depthParams[3] = _depthScaleY;
 
@@ -786,6 +921,7 @@ void OutlineRenderer::DrawDebugQuad()
 
 	UINT stride = sizeof(float) * 3;
 	UINT offset = 0;
+	_context->IASetInputLayout(_inputLayoutFull);  // the quad's verts are float32x3
 	_context->IASetVertexBuffers(0, 1, &_debugQuadVB, &stride, &offset);
 	_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	// No depth/cull interference for the debug quad.

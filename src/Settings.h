@@ -35,26 +35,21 @@ public:
 	// Hide the outline behind walls and other meshes by testing the scene depth.
 	bool occlude = true;
 
-	// Flip this if occlusion comes out inverted (outline visible ONLY through walls,
-	// or vanishing entirely): it selects the sense of the depth buffer.
-	bool reverseDepth = false;
+	// Sense of the depth buffer. -1 = auto-detect from the camera's own projection
+	// (recommended). 0 = normal (0 at the near plane), 1 = reversed. Only set this if
+	// occlusion comes out inverted - outline visible ONLY through walls, or vanishing.
+	std::int32_t reverseDepth = -1;
 
 	// Which depth target to sample. -1 = pick automatically (recommended). The log
 	// lists every target and whether it is sampleable, so a specific index can be
 	// forced here without rebuilding.
 	std::int32_t depthSource = -1;
 
-	// Draw the outline just before the UI (hooking the Scaleform renderer) instead of
-	// at Present. Puts the outline underneath the HUD and may make the scene depth
-	// buffer available for occlusion. Experimental: if the game crashes on load,
-	// set this back to 0 - no rebuild needed.
-	bool preUIHook = false;
-
-	// Which vtable slot of the Scaleform renderer to hook. 4 (GRenderer::BeginFrame)
-	// was never called, so the real layout differs. The log dumps the first 20 slots;
-	// only probe ones whose signature is void(this) - 4, 5 and 13 (0xD) - since a
-	// mismatched signature will corrupt the stack.
-	std::int32_t preUIVtableIndex = 4;
+	// Draw the outline just before the UI (hooking GRenderer::BeginDisplay on the live
+	// Scaleform renderer) instead of at Present. This is what puts the outline
+	// underneath the HUD and what makes the scene depth buffer usable for occlusion.
+	// Turning it off falls back to drawing at Present, over the UI.
+	bool preUIHook = true;
 
 	// Draw a fixed coloured quad in the top-left instead of the outline. Isolates
 	// "Present hook / render target / shaders are fine" from "geometry or matrix is

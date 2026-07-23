@@ -1,36 +1,40 @@
 # ItemOutline
 
-Highlights collectable items with an **edge glow** when the crosshair is over them,
+Highlights collectable items with an **outline** when the crosshair is over them,
 and removes it when you look away. Built for **Skyrim Anniversary Edition (1.6.x)**.
 
-**Community Shaders / ENB compatible by design:** it never hooks the D3D11 render
-pipeline. It applies the game's native `TESEffectShader` (edge effect) to the
-reference under the crosshair, so whatever lighting/post-processing stack you run
-(Community Shaders, ENB, or vanilla) renders it through the normal path — no pass
-ordering or render-state conflicts.
-
-**No ESP, no Creation Kit needed:** the effect shader is built entirely in code at
-runtime from `ItemOutline.ini`, using a small fill texture shipped with the mod. The
-artifact is a ready-to-install mod (DLL + INI + texture).
+**No ESP, no Creation Kit needed:** everything is built in code at runtime from
+`ItemOutline.ini`. The artifact is a ready-to-install mod (DLL + INI).
 
 ## How it works
 
-1. On `kDataLoaded`, read `ItemOutline.ini` and **create** the edge `TESEffectShader`
-   at runtime from those values (see [`HighlightManager::Init`](src/HighlightManager.cpp)).
+The outline is an **inverted hull**: the target's own geometry, re-issued through our
+own D3D11 shaders, inflated slightly and rasterized with front faces culled, so only
+the back faces survive — a band around the silhouette. A stencil mask pass carves out
+the object's interior so only the band remains.
+
+1. On `kDataLoaded`, read `ItemOutline.ini`.
 2. Hook `PlayerCharacter::Update` and **poll `CrosshairPickData` every frame** so the
    highlight tracks the reticle tightly (no lag from the game's sticky crosshair-ref event).
 3. For the current target, [`ItemFilter`](src/ItemFilter.cpp) checks the base form type
    against the enabled categories.
-4. [`HighlightManager`](src/HighlightManager.cpp) applies the effect shader to the
-   new target and stops it on the previous one (by scanning the active temp-effect
-   list and setting `finished = true`).
+4. [`OutlineRenderer`](src/OutlineRenderer.cpp) draws the hull once per frame, from
+   **`GRenderer::BeginDisplay`** on the live Scaleform renderer — the first UI draw of
+   the frame. Drawing there is what puts the outline *under* the HUD and what keeps the
+   scene depth buffer available, so the outline can be **occluded** by walls and other
+   meshes. `IDXGISwapChain::Present` is also hooked, as a frame delimiter and as a
+   fallback that draws (over the UI) on any frame where no menu rendered.
+
+Every D3D state the renderer touches is saved and restored, so Community Shaders and
+ENB see the pipeline exactly as they left it.
 
 | File | Role |
 |------|------|
 | [src/main.cpp](src/main.cpp) | SKSE entry point, logging, lifecycle |
 | [src/CrosshairWatcher.cpp](src/CrosshairWatcher.cpp) | Per-frame crosshair polling (Update hook) |
 | [src/ItemFilter.cpp](src/ItemFilter.cpp) | Eligibility by base form type |
-| [src/HighlightManager.cpp](src/HighlightManager.cpp) | Apply/remove effect shader |
+| [src/HighlightManager.cpp](src/HighlightManager.cpp) | Holds the current target |
+| [src/OutlineRenderer.cpp](src/OutlineRenderer.cpp) | Render hooks + the inverted-hull pass |
 | [src/Settings.cpp](src/Settings.cpp) | INI parsing (SimpleIni) |
 
 ## Requirements (runtime)
@@ -76,15 +80,9 @@ cmake --preset windows-release -DITEMOUTLINE_DEPLOY_DIR="C:/Path/To/mods/ItemOut
 > submodule checked out will show "file not found" IntelliSense errors — those
 > resolve once the submodule is present and CMake has configured.
 
-The effect shader is created in code (see
-[`HighlightManager::Init`](src/HighlightManager.cpp)) — there is **no ESP** and nothing
-to author in the Creation Kit. Its look is driven by the `[Highlight]` keys in the INI
-(edge color, edge fall-off/width, fill alpha). The fill texture ships with the mod at
-`textures/ItemOutline/edge_gradient.dds`.
-
-> This produces a Fresnel rim-glow around the item — the practical "outline" for an
-> effect-shader approach. A crisp vector-style contour would require a screen-space
-> render pass and is intentionally out of scope (see the plan).
+Everything is built in code — there is **no ESP** and nothing to author in the Creation
+Kit. The look is driven by the `[Highlight]` keys in the INI (outline color, thickness,
+occlusion).
 
 ## Installing
 
@@ -94,27 +92,31 @@ into `Data/` (or install the folder as a mod in MO2/Vortex):
 ```
 SKSE/Plugins/ItemOutline.dll
 SKSE/Plugins/ItemOutline.ini
-textures/ItemOutline/edge_gradient.dds
 ```
 
 ## Configuration
 
 Edit `Data/SKSE/Plugins/ItemOutline.ini` — see
 [data/SKSE/Plugins/ItemOutline.ini](data/SKSE/Plugins/ItemOutline.ini) for every key
-(which categories to highlight, minimum item value, outline color, edge fall-off/width,
-fill alpha, shader lifetime).
+(which categories to highlight, minimum item value, outline color and thickness,
+occlusion, and the render-path/debug toggles).
 
 ## Testing in-game
 
-1. Install the mod (DLL + INI + texture) alongside SKSE + Address Library, with
-   Community Shaders active.
+1. Install the mod (DLL + INI) alongside SKSE + Address Library, with Community
+   Shaders active.
 2. Load a save; open `Documents/My Games/Skyrim Special Edition/SKSE/ItemOutline.log`
-   and confirm "ItemOutline ready" and "Runtime effect shader created".
+   and confirm "ItemOutline ready", "Pre-UI hook installed", "Drawing pre-UI", the
+   chosen depth-source index and the auto-detected depth sense.
 3. Point the crosshair at: a weapon/potion on the ground, an item on a table, a plant,
-   and (if enabled) an ore vein → the edge glow appears **only** on those.
-4. Move the crosshair away → the glow disappears immediately (no stuck effect).
+   and (if enabled) an ore vein → the outline appears **only** on those.
+4. Move the crosshair away → the outline disappears immediately.
 5. Confirm containers/chests and NPCs/corpses are **not** highlighted.
-6. Toggle Community Shaders and ENB on/off → outline still renders, no crash, no
-   visual conflict. Sweep the crosshair quickly across several items to confirm
-   effects don't accumulate.
-7. Change the color/category settings in the INI and reconfirm.
+6. **Under the UI:** with an item outlined, open the inventory or map — the outline must
+   sit *behind* the menu panels, not over them.
+7. **Occlusion:** step behind a wall or column so the item is hidden → the outline
+   disappears, and returns when it is in sight again. If it shows up *only* through
+   walls, the auto-detect got the depth sense backwards — set `iReverseDepth = 1`.
+8. Toggle Community Shaders and ENB on/off → outline still renders, no crash, no
+   shadow/G-buffer artefacts, no menu flicker.
+9. Change the color/category settings in the INI and reconfirm.

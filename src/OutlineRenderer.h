@@ -7,6 +7,7 @@
 namespace RE
 {
 	class BSGeometry;
+	class NiPoint3;
 	class TESObjectREFR;
 }
 
@@ -14,25 +15,33 @@ namespace RE
 // with our shaders, inflated slightly and rasterized with FRONT faces culled, so
 // only the back faces show - which appear as a band around the silhouette.
 //
-// Runs from an IDXGISwapChain::Present hook (i.e. after the game's and Community
-// Shaders' post-processing), and saves/restores every D3D state it touches so it
+// Runs from GRenderer::BeginDisplay - the first Scaleform draw of the frame, after the
+// game's and Community Shaders' post-processing but before the UI - so the outline sits
+// under the HUD and the scene depth buffer is still available to occlude against.
+// IDXGISwapChain::Present is hooked too, as a frame delimiter and as the fallback for
+// frames where no menu rendered. Every D3D state it touches is saved and restored so it
 // cannot disturb CS.
 class OutlineRenderer
 {
 public:
 	static OutlineRenderer* GetSingleton();
 
-	// Patch IDXGISwapChain::Present. Safe to call more than once.
+	// Patch IDXGISwapChain::Present. Safe to call more than once. Always installed:
+	// it delimits the frame and is the fallback path when the pre-UI hook is absent.
 	void InstallHook();
 
-	// Patch GRenderer::BeginFrame on the live Scaleform renderer, which runs just
-	// before the UI is drawn. Lets the outline sit under the HUD, and gives access to
-	// the frame at a point where the scene depth buffer still exists. The vtable
-	// comes from a live object, so no version-specific address is needed.
+	// Patch GRenderer::BeginDisplay on the live Scaleform renderer, which runs just
+	// before each movie is drawn. Lets the outline sit under the HUD, and catches the
+	// frame at a point where the scene depth buffer still holds this frame's scene.
+	// The vtable comes from a live object, so no version-specific address is needed.
 	void InstallPreUIHook();
 
-	// Called from whichever hook is active, once per frame.
-	void OnPresent();
+	// First Scaleform draw of the frame: this is the "under the UI" path.
+	void OnPreUIDraw();
+
+	// Present: draws only if the pre-UI path did not run this frame, then resets the
+	// per-frame guard.
+	void OnFrameEnd();
 
 private:
 	OutlineRenderer() = default;
@@ -52,11 +61,20 @@ private:
 		float depthParams[4];  // x: depth sign, y: occlusion on/off
 	};
 
+	// The actual per-frame render, shared by both entry points.
+	void Draw();
+
 	bool EnsureResources(ID3D11Device* a_device);
 	bool EnsureStencilBuffer();
 
-	// Finds a depth target that is actually readable from a shader. kMAIN only has a
-	// DSV (it is written, never sampled), so the copies have to be used instead.
+	// Works out whether the scene depth buffer has 0 or 1 at the near plane, by
+	// projecting two points that share a screen position at different distances
+	// through the very matrix the game rendered the scene with.
+	void ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos);
+
+	// Finds a depth target that is actually readable from a shader. Which one that is
+	// depends on where in the frame we are, so the preference order follows
+	// _drawingPreUI - see the implementation.
 	ID3D11ShaderResourceView* PickDepthSRV(void* a_rendererData, float& a_scaleX, float& a_scaleY);
 	void DrawTarget(RE::TESObjectREFR* a_ref);
 	void DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_viewProj, float a_inflate);
@@ -67,7 +85,10 @@ private:
 	ID3D11DeviceContext* _context{ nullptr };
 	ID3D11VertexShader* _vs{ nullptr };
 	ID3D11PixelShader* _ps{ nullptr };
-	ID3D11InputLayout* _inputLayout{ nullptr };
+	// Two layouts because Skyrim stores POSITION either as float32x3 (VF_FULLPREC) or
+	// as float16x4. Using one for both leaves half the meshes with a mangled hull.
+	ID3D11InputLayout* _inputLayoutFull{ nullptr };
+	ID3D11InputLayout* _inputLayoutHalf{ nullptr };
 	ID3D11Buffer* _cbuffer{ nullptr };
 	ID3D11RasterizerState* _rasterCullFront{ nullptr };
 	ID3D11RasterizerState* _rasterCullBack{ nullptr };
@@ -95,6 +116,18 @@ private:
 	bool _loggedDepthSources{ false };
 	bool _depthSourceResolved{ false };
 	bool _depthAvailable{ false };
+
+	// Set while drawing from the Scaleform hook. Chooses the depth-target preference
+	// order (mid-frame the main depth buffer is the live one) and, once true for a
+	// frame, stops the Present fallback from drawing the outline a second time.
+	bool _drawingPreUI{ false };
+	bool _uiDrawnThisFrame{ false };
+	bool _loggedDrawPath{ false };
+
+	// +1 if the depth buffer has 0 at the near plane, -1 if reversed. 0 = unresolved.
+	float _depthSign{ 0.0f };
+	bool _loggedDepthSense{ false };
+
 	float _depthScaleX{ 1.0f };
 	float _depthScaleY{ 1.0f };
 	int _depthSourceIndex{ -1 };  // resolved once; -1 = not chosen yet
