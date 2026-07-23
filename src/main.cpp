@@ -34,9 +34,13 @@ namespace
 			logger::info("ItemOutline ready - watching crosshair.");
 			break;
 
-		// The swap chain only exists once the renderer is up, so the Present hook
-		// goes here rather than at kDataLoaded. Both messages are handled because
-		// either can be the first time we reach a live render loop.
+		// The swap chain and the Scaleform renderer only exist once the renderer is up,
+		// so the hooks go here rather than at kDataLoaded. Both messages are handled
+		// because either can be the first time we reach a live render loop.
+		//
+		// The Present hook is always installed: it delimits the frame, and it draws the
+		// outline itself on any frame the pre-UI path didn't run (no menus, or that hook
+		// unavailable) - so the outline degrades to "over the UI" instead of vanishing.
 		case SKSE::MessagingInterface::kPostLoadGame:
 		case SKSE::MessagingInterface::kNewGame:
 			OutlineRenderer::GetSingleton()->InstallHook();
