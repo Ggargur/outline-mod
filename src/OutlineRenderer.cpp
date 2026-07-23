@@ -392,6 +392,34 @@ void OutlineRenderer::Draw()
 	ID3D11DepthStencilView* oldDSV = nullptr;
 	_context->OMGetRenderTargets(kMaxRTVs, oldRTVs, &oldDSV);
 
+	// Diagnostic: the depth-stencil bound to the context at our draw point is the
+	// game's live one. If it carries a usable scene depth, we can hardware-test
+	// against it directly, no engine-managed SRV needed. Log its format and size once.
+	if (!_loggedBoundDSV) {
+		_loggedBoundDSV = true;
+		if (oldDSV) {
+			D3D11_DEPTH_STENCIL_VIEW_DESC dvd{};
+			oldDSV->GetDesc(&dvd);
+			ID3D11Resource* res = nullptr;
+			oldDSV->GetResource(&res);
+			std::uint32_t w = 0, h = 0, fmt = 0;
+			if (res) {
+				ID3D11Texture2D* tex = nullptr;
+				if (SUCCEEDED(res->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&tex))) && tex) {
+					D3D11_TEXTURE2D_DESC td{};
+					tex->GetDesc(&td);
+					w = td.Width; h = td.Height; fmt = static_cast<std::uint32_t>(td.Format);
+					tex->Release();
+				}
+				res->Release();
+			}
+			logger::info("Bound DSV at draw: view={} dsvFlags={} viewFmt={} texFmt={} size={}x{}",
+				static_cast<void*>(oldDSV), dvd.Flags, static_cast<std::uint32_t>(dvd.Format), fmt, w, h);
+		} else {
+			logger::info("Bound DSV at draw: none.");
+		}
+	}
+
 	ID3D11Buffer* oldVB = nullptr;
 	UINT oldVBStride = 0;
 	UINT oldVBOffset = 0;
@@ -561,6 +589,27 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 			}
 			logger::info("CONTROL framebuffer: rtv={} srv={} tex={} size={}x{}",
 				fb.RTV ? "yes" : "no", fb.SRV ? "yes" : "no", fb.texture ? "yes" : "no", w, h);
+		}
+
+		// Are we even reading the same RendererData the working depth-sampling mods
+		// use? They go through Renderer::GetSingleton()->data; we use GetRendererData()
+		// (a separate global pointer). If these differ, that alone explains empty depth.
+		if (auto* singleton = RE::BSGraphics::Renderer::GetSingleton()) {
+			logger::info("RendererData: GetRendererData()={} vs &GetSingleton()->data={} ({})",
+				static_cast<void*>(renderer), static_cast<void*>(&singleton->data),
+				renderer == &singleton->data ? "same" : "DIFFERENT");
+		}
+
+		// All eight DSV/read-only-DSV slots of kMAIN: the main depth view may live in a
+		// slot other than [0], which the one-slot audit above would miss.
+		{
+			auto& main = renderer->depthStencils[RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN];
+			for (int v = 0; v < 8; ++v) {
+				if (main.views[v] || main.readOnlyViews[v]) {
+					logger::info("  kMAIN view[{}]: dsv={} rodsv={}",
+						v, main.views[v] ? "yes" : "no", main.readOnlyViews[v] ? "yes" : "no");
+				}
+			}
 		}
 
 		// srv  = sampleable in a pixel shader (what the current occlusion path needs).

@@ -124,6 +124,7 @@ private:
 	float _depthSign{ 0.0f };
 	bool _loggedDepthSense{ false };
 	bool _loggedViewport{ false };
+	bool _loggedBoundDSV{ false };
 
 	float _depthScaleX{ 1.0f };
 	float _depthScaleY{ 1.0f };
