@@ -410,8 +410,8 @@ void OutlineRenderer::Draw()
 
 	// Drawing pre-UI means Scaleform has its own viewport set up and expects to find
 	// it untouched when it resumes.
-	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT]{};
-	UINT oldViewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT;
+	D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
+	UINT oldViewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
 	_context->RSGetViewports(&oldViewportCount, oldViewports);
 
 	ID3D11InputLayout* oldLayout = nullptr;
