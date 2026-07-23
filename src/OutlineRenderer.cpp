@@ -7,7 +7,6 @@
 
 #include <d3dcompiler.h>
 
-#include <array>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -149,10 +148,14 @@ void OutlineRenderer::InstallPreUIHook()
 		return;
 	}
 
-	// BSScaleformRenderer is NOT polymorphic - it is just { GPtr<GFxRenderConfig> }.
-	// The previous version took its vtable directly, which actually read
-	// GFxRenderConfig's, and that is why slot 4 was never called. The real GRenderer
-	// lives one level deeper.
+	// BSScaleformRenderer is NOT polymorphic. Skyrim SE's own debug symbols give it as
+	// an 8-byte struct with no vtable and no base, holding a single member (the
+	// GFxRenderConfig pointer) at offset 0. So the previous version's
+	// *(void***)manager->renderer did not read a vtable at all - it read the config
+	// pointer and then indexed into GFxRenderConfig's *fields*, meaning "slot 4" wrote
+	// a function pointer over live render state. It could never have fired.
+	//
+	// The real GRenderer is one hop further in: config->renderer.
 	auto* manager = RE::BSScaleformManager::GetSingleton();
 	auto* config = (manager && manager->renderer) ? manager->renderer->config.get() : nullptr;
 	auto* renderer = config ? config->GetRenderer() : nullptr;
@@ -162,9 +165,30 @@ void OutlineRenderer::InstallPreUIHook()
 	}
 
 	// GRenderer vtable (RE/G/GRenderer.h): 0C = BeginDisplay. Pure virtual there, so
-	// the game's renderer definitely implements it and it runs for every movie drawn.
+	// the game's renderer must implement it, and it runs for every movie drawn.
+	//
+	// Unlike the pointer chain above, this index is NOT confirmed against the game's
+	// symbols - it comes from CommonLibSSE-NG's transcription of the Scaleform GFx
+	// interface. Writing a function pointer into the wrong slot corrupts state
+	// silently, as the previous version did, so sanity-check that the vtable and the
+	// entry we are about to replace both point inside the game module first.
 	void** vtable = *reinterpret_cast<void***>(renderer);
 	constexpr std::size_t kBeginDisplayIndex = 0x0C;
+
+	// A real vtable slot holds a pointer into the executable segment. If it does not,
+	// we are not looking at a vtable and must not write to it.
+	const auto text = REL::Module::get().segment(REL::Segment::textx);
+	const auto textBegin = text.address();
+	const auto textEnd = textBegin + text.size();
+	const auto target = reinterpret_cast<std::uintptr_t>(vtable[kBeginDisplayIndex]);
+
+	if (target < textBegin || target >= textEnd) {
+		logger::error(
+			"Scaleform renderer slot {:#X} holds {}, which is not code in the game module - "
+			"refusing to hook. Set bPreUIHook = 0 to draw at Present instead.",
+			kBeginDisplayIndex, vtable[kBeginDisplayIndex]);
+		return;
+	}
 
 	DWORD oldProtect = 0;
 	if (!VirtualProtect(&vtable[kBeginDisplayIndex], sizeof(void*), PAGE_READWRITE, &oldProtect)) {
@@ -316,9 +340,7 @@ void OutlineRenderer::OnPreUIDraw()
 		logger::info("Drawing pre-UI (Scaleform BeginDisplay) - outline sits under the HUD.");
 	}
 
-	_drawingPreUI = true;
 	Draw();
-	_drawingPreUI = false;
 }
 
 void OutlineRenderer::OnFrameEnd()
@@ -557,22 +579,17 @@ ID3D11ShaderResourceView* OutlineRenderer::PickDepthSRV(void* a_rendererData, fl
 		if (configured >= 0 && configured < RE::RENDER_TARGET_DEPTHSTENCIL::kTOTAL) {
 			_depthSourceIndex = configured;
 		} else {
-			// Mid-frame (pre-UI) the main depth buffer still holds this frame's scene,
-			// so prefer it there. At Present it may already have been recycled, so the
-			// copies - which exist specifically to be sampled - come first instead.
-			const std::array preUICandidates{
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY),
+			// kPOST_ZPREPASS_COPY first, kMAIN as the fallback: this is the order every
+			// depth-sampling mod in the ecosystem uses (Community Shaders, ENB Frame
+			// Generation, the FSR upscalers, glyph's nameplate depth clip). The copy
+			// exists specifically to be sampled from a shader; kMAIN is primarily a DSV.
+			const int candidates[] = {
+				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY,
+				RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN,
 			};
-			const std::array presentCandidates{
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_ZPREPASS_COPY),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN_COPY),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kPOST_WATER_COPY),
-				static_cast<int>(RE::RENDER_TARGET_DEPTHSTENCIL::kMAIN),
-			};
-			for (int candidate : _drawingPreUI ? preUICandidates : presentCandidates) {
+			for (int candidate : candidates) {
 				if (renderer->depthStencils[candidate].depthSRV) {
 					_depthSourceIndex = candidate;
 					break;
@@ -651,25 +668,31 @@ bool OutlineRenderer::EnsureStencilBuffer()
 
 // Which end of the depth range is "near" is a property of the projection the game
 // rendered with - and that is the very matrix we are holding. So rather than asking
-// the user to guess (the old bReverseDepth), project two points that land on the same
-// pixel at different distances and see which way z/w moves.
+// the user to guess, project two points at different view depths and see which way
+// z/w moves. Recomputed every frame (cheap, and survives a projection change);
+// 0 means indeterminate, which disables the test rather than inverting it.
+//
+// This mirrors what glyph's nameplate depth clip does for the same problem
+// (ComputeDepthPolarity in its Renderer.cpp).
 void OutlineRenderer::ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos)
 {
-	if (_depthSign != 0.0f) {
+	if (const int forced = Settings::GetSingleton()->reverseDepth; forced >= 0) {
+		_depthSign = forced ? -1.0f : 1.0f;
+		if (!_loggedDepthSense) {
+			_loggedDepthSense = true;
+			logger::info("Depth sense forced by INI: {}.", forced ? "reversed" : "normal");
+		}
 		return;
 	}
 
-	if (const int forced = Settings::GetSingleton()->reverseDepth; forced >= 0) {
-		_depthSign = forced ? -1.0f : 1.0f;
-		logger::info("Depth sense forced by INI: {}.", forced ? "reversed" : "normal");
-		return;
-	}
+	_depthSign = 0.0f;
 
 	auto* camera = RE::Main::WorldRootCamera();
 	if (!camera) {
 		return;
 	}
 	const auto& camPos = camera->world.translate;
+
 
 	// Same screen position, twice the distance.
 	const RE::NiPoint3 farPoint = camPos + (a_worldPos - camPos) * 2.0f;
@@ -802,11 +825,12 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 		return;
 	}
 
-	// Stride and position format both come from VertexDesc::GetSize() and a fixed
-	// float32x3 layout. Deriving the stride from the descriptor's low nibble and
-	// switching to a float16x4 layout on !VF_FULLPREC instead - which is what the
-	// on-disk NIF encoding would suggest - produced garbage geometry smeared across
-	// the screen, so the runtime layout evidently does not match that assumption.
+	// POSITION is float32x3 and the stride comes from VertexDesc::GetSize(). Do NOT
+	// switch to a float16x4 layout when VF_FULLPREC is clear: Skyrim SE always stores
+	// positions at full precision regardless of that flag (it only means something
+	// from Fallout 4 onward), which is exactly why GetSize() counts POSITION as
+	// sizeof(float)*4 unconditionally. Honouring the flag reads float32 data as halves
+	// and smears garbage triangles across the screen.
 	auto& vertexDesc = a_geometry->GetGeometryRuntimeData().vertexDesc;
 	const UINT stride = vertexDesc.GetSize();
 	const UINT positionOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);

@@ -72,9 +72,8 @@ private:
 	// through the very matrix the game rendered the scene with.
 	void ResolveDepthSense(const Matrix4& a_viewProj, const RE::NiPoint3& a_worldPos);
 
-	// Finds a depth target that is actually readable from a shader. Which one that is
-	// depends on where in the frame we are, so the preference order follows
-	// _drawingPreUI - see the implementation.
+	// Finds a depth target that is actually readable from a shader: kPOST_ZPREPASS_COPY
+	// is the one the rest of the ecosystem samples, with kMAIN as a last resort.
 	ID3D11ShaderResourceView* PickDepthSRV(void* a_rendererData, float& a_scaleX, float& a_scaleY);
 	void DrawTarget(RE::TESObjectREFR* a_ref);
 	void DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_viewProj, float a_inflate);
@@ -114,14 +113,13 @@ private:
 	bool _depthSourceResolved{ false };
 	bool _depthAvailable{ false };
 
-	// Set while drawing from the Scaleform hook. Chooses the depth-target preference
-	// order (mid-frame the main depth buffer is the live one) and, once true for a
-	// frame, stops the Present fallback from drawing the outline a second time.
-	bool _drawingPreUI{ false };
+	// Set once the Scaleform hook has drawn this frame, so the Present fallback does
+	// not draw the outline a second time.
 	bool _uiDrawnThisFrame{ false };
 	bool _loggedDrawPath{ false };
 
-	// +1 if the depth buffer has 0 at the near plane, -1 if reversed. 0 = unresolved.
+	// +1 if the depth buffer has 0 at the near plane, -1 if reversed, 0 = indeterminate
+	// (which disables the occlusion test). Recomputed every frame.
 	float _depthSign{ 0.0f };
 	bool _loggedDepthSense{ false };
 
