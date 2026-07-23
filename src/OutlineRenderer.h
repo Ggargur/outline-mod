@@ -85,10 +85,7 @@ private:
 	ID3D11DeviceContext* _context{ nullptr };
 	ID3D11VertexShader* _vs{ nullptr };
 	ID3D11PixelShader* _ps{ nullptr };
-	// Two layouts because Skyrim stores POSITION either as float32x3 (VF_FULLPREC) or
-	// as float16x4. Using one for both leaves half the meshes with a mangled hull.
-	ID3D11InputLayout* _inputLayoutFull{ nullptr };
-	ID3D11InputLayout* _inputLayoutHalf{ nullptr };
+	ID3D11InputLayout* _inputLayout{ nullptr };
 	ID3D11Buffer* _cbuffer{ nullptr };
 	ID3D11RasterizerState* _rasterCullFront{ nullptr };
 	ID3D11RasterizerState* _rasterCullBack{ nullptr };

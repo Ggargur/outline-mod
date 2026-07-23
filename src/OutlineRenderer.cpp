@@ -226,23 +226,13 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	_device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &_vs);
 	_device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &_ps);
 
-	// --- Input layouts: POSITION only, stride comes from the mesh's VertexDesc ----
-	// Skyrim stores POSITION as float32x3 when the mesh carries VF_FULLPREC, and as
-	// float16x4 otherwise, so one layout per encoding. Both feed the same VS.
-	const D3D11_INPUT_ELEMENT_DESC fullLayout[] = {
+	// --- Input layout: POSITION only, stride comes from the mesh's VertexDesc ----
+	const D3D11_INPUT_ELEMENT_DESC layout[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	};
-	hr = _device->CreateInputLayout(fullLayout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayoutFull);
+	hr = _device->CreateInputLayout(layout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayout);
 	if (FAILED(hr)) {
-		logger::error("CreateInputLayout (full precision) failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
-	}
-
-	const D3D11_INPUT_ELEMENT_DESC halfLayout[] = {
-		{ "POSITION", 0, DXGI_FORMAT_R16G16B16A16_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-	};
-	hr = _device->CreateInputLayout(halfLayout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &_inputLayoutHalf);
-	if (FAILED(hr)) {
-		logger::error("CreateInputLayout (half precision) failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
+		logger::error("CreateInputLayout failed (0x{:08X}).", static_cast<std::uint32_t>(hr));
 	}
 
 	vsBlob->Release();
@@ -301,7 +291,7 @@ bool OutlineRenderer::EnsureResources(ID3D11Device* a_device)
 	bd.RenderTarget[0].RenderTargetWriteMask = 0;  // mask pass writes stencil only
 	_device->CreateBlendState(&bd, &_blendNoColorWrite);
 
-	_resourcesReady = _vs && _ps && _inputLayoutFull && _inputLayoutHalf && _cbuffer &&
+	_resourcesReady = _vs && _ps && _inputLayout && _cbuffer &&
 	                  _rasterCullFront && _rasterCullBack &&
 	                  _stencilWrite && _stencilTestOutside &&
 	                  _blendOpaque && _blendNoColorWrite;
@@ -450,6 +440,7 @@ void OutlineRenderer::Draw()
 		viewport.MaxDepth = 1.0f;
 		_context->RSSetViewports(1, &viewport);
 
+		_context->IASetInputLayout(_inputLayout);
 		_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 		_context->VSSetShader(_vs, nullptr, 0);
 		_context->PSSetShader(_ps, nullptr, 0);
@@ -811,23 +802,17 @@ void OutlineRenderer::DrawGeometry(RE::BSGeometry* a_geometry, const Matrix4& a_
 		return;
 	}
 
+	// Stride and position format both come from VertexDesc::GetSize() and a fixed
+	// float32x3 layout. Deriving the stride from the descriptor's low nibble and
+	// switching to a float16x4 layout on !VF_FULLPREC instead - which is what the
+	// on-disk NIF encoding would suggest - produced garbage geometry smeared across
+	// the screen, so the runtime layout evidently does not match that assumption.
 	auto& vertexDesc = a_geometry->GetGeometryRuntimeData().vertexDesc;
+	const UINT stride = vertexDesc.GetSize();
 	const UINT positionOffset = vertexDesc.GetAttributeOffset(RE::BSGraphics::Vertex::Attribute::VA_POSITION);
-
-	// The true stride is encoded in the low nibble of the descriptor, in 4-byte units.
-	// VertexDesc::GetSize() recomputes it from the flags and assumes POSITION is always
-	// float32x4, which is wrong for the (common) half-precision meshes.
-	const std::uint64_t rawDesc = *reinterpret_cast<const std::uint64_t*>(&vertexDesc);
-	UINT stride = static_cast<UINT>((rawDesc & 0xF) * 4);
-	if (stride == 0 || stride > 64) {
-		stride = vertexDesc.GetSize();  // implausible - fall back
-	}
 	if (stride == 0) {
 		return;
 	}
-
-	const bool fullPrecision = vertexDesc.HasFlag(RE::BSGraphics::Vertex::Flags::VF_FULLPREC);
-	_context->IASetInputLayout(fullPrecision ? _inputLayoutFull : _inputLayoutHalf);
 
 	// World transform, converted to row-vector convention, with the inflation baked
 	// into the scale. Scaling about the node origin is a coarser hull than pushing
@@ -921,7 +906,6 @@ void OutlineRenderer::DrawDebugQuad()
 
 	UINT stride = sizeof(float) * 3;
 	UINT offset = 0;
-	_context->IASetInputLayout(_inputLayoutFull);  // the quad's verts are float32x3
 	_context->IASetVertexBuffers(0, 1, &_debugQuadVB, &stride, &offset);
 	_context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	// No depth/cull interference for the debug quad.
